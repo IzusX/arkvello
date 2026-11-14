@@ -1,0 +1,4 @@
+module CSevenZip {
+    header "sevenzip_bridge.h"
+    export *
+}

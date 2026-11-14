@@ -1,0 +1,20 @@
+# SwiftPM & Xcode build artifacts
+.build/
+.scratch/
+.cache/
+.modcache/
+.tmp/
+.swiftpm/
+DerivedData/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcuserdata
+
+# Compiled native artifacts & app bundles
+Vendor/7zip/CPP/7zip/Bundles/Alone2/b/
+Vendor/lib/
+dist/
+*.app/
+*.dmg
+
+# macOS
+.DS_Store
