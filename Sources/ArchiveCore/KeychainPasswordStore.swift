@@ -3,7 +3,7 @@ import Security
 
 /// Stores and retrieves archive passwords in the native macOS Keychain (`Security.framework`).
 public enum KeychainPasswordStore {
-    public static let defaultService = "io.github.izusx.sevenzipmac.archive-password"
+    public static let defaultService = "io.github.izusx.arkvello.archive-password"
 
     private static func accountKey(for archiveURL: URL) -> String {
         archiveURL.standardizedFileURL.path
@@ -47,7 +47,7 @@ public enum KeychainPasswordStore {
 
         let attributesToUpdate: [String: Any] = [
             kSecValueData as String: data,
-            kSecAttrLabel as String: "7-Zip: \(archiveURL.lastPathComponent)"
+            kSecAttrLabel as String: "Arkvello: \(archiveURL.lastPathComponent)"
         ]
 
         let updateStatus = SecItemUpdate(matchQuery as CFDictionary, attributesToUpdate as CFDictionary)
@@ -57,7 +57,7 @@ public enum KeychainPasswordStore {
 
         var insertQuery = matchQuery
         insertQuery[kSecValueData as String] = data
-        insertQuery[kSecAttrLabel as String] = "7-Zip: \(archiveURL.lastPathComponent)"
+        insertQuery[kSecAttrLabel as String] = "Arkvello: \(archiveURL.lastPathComponent)"
         insertQuery[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlocked
 
         let addStatus = SecItemAdd(insertQuery as CFDictionary, nil)

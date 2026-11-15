@@ -2,31 +2,31 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_NAME="7-Zip"
-EXEC_NAME="SevenZipMac"
+APP_NAME="Arkvello"
+EXEC_NAME="Arkvello"
 DIST_DIR="$ROOT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 DYLIB_PATH="$ROOT_DIR/Vendor/lib/libsevenzip.dylib"
 
-if [[ ! -f "$DYLIB_PATH" ]]; then
-  "$ROOT_DIR/Scripts/build-7zip.sh"
-fi
-
-echo "[1/4] Building release binary ($EXEC_NAME)..."
+source "$ROOT_DIR/Scripts/build-architectures.sh"
+# Always rebuild the engine so stale single-architecture libraries cannot leak into releases.
+ARCHS="$ARCHS" bash "$ROOT_DIR/Scripts/build-7zip.sh"
+cd "$ROOT_DIR"
+echo "[1/4] Building release binary ($EXEC_NAME; $ARCHS)..."
 mkdir -p "$ROOT_DIR/.tmp" "$ROOT_DIR/.modcache" "$ROOT_DIR/.cache" "$ROOT_DIR/.scratch"
-TMPDIR="$ROOT_DIR/.tmp" \
-CLANG_MODULE_CACHE_PATH="$ROOT_DIR/.modcache" \
-swift build -c release \
-  --disable-sandbox \
-  --cache-path "$ROOT_DIR/.cache" \
-  --scratch-path "$ROOT_DIR/.scratch"
-
-BIN_DIR="$(TMPDIR="$ROOT_DIR/.tmp" CLANG_MODULE_CACHE_PATH="$ROOT_DIR/.modcache" swift build -c release --show-bin-path --disable-sandbox --cache-path "$ROOT_DIR/.cache" --scratch-path "$ROOT_DIR/.scratch")"
+export TMPDIR="$ROOT_DIR/.tmp" CLANG_MODULE_CACHE_PATH="$ROOT_DIR/.modcache"
+SWIFT_ARCH_ARGS=()
+for ARCH in "${BUILD_ARCHS[@]}"; do SWIFT_ARCH_ARGS+=(--arch "$ARCH"); done
+swift build -c release "${SWIFT_ARCH_ARGS[@]}" --disable-sandbox \
+  --cache-path "$ROOT_DIR/.cache" --scratch-path "$ROOT_DIR/.scratch"
+BIN_DIR="$(swift build -c release "${SWIFT_ARCH_ARGS[@]}" --show-bin-path --disable-sandbox --cache-path "$ROOT_DIR/.cache" --scratch-path "$ROOT_DIR/.scratch")"
 BIN_PATH="$BIN_DIR/$EXEC_NAME"
-if [[ ! -f "$BIN_PATH" ]]; then
-  echo "Error: compiled binary $EXEC_NAME not found at $BIN_PATH" >&2
-  exit 1
-fi
+for REQUIRED_ARCH in "${BUILD_ARCHS[@]}"; do
+  case " $(lipo -archs "$BIN_PATH") " in
+    *" $REQUIRED_ARCH "*) ;;
+    *) echo "Missing $REQUIRED_ARCH slice in ""$BIN_PATH" >&2; exit 1 ;;
+  esac
+done
 
 echo "[2/4] Assembling $APP_BUNDLE..."
 rm -rf "$APP_BUNDLE"
@@ -37,6 +37,14 @@ mkdir -p "$APP_BUNDLE/Contents/Resources"
 cp "$BIN_PATH" "$APP_BUNDLE/Contents/MacOS/$EXEC_NAME"
 cp "$DYLIB_PATH" "$APP_BUNDLE/Contents/Frameworks/libsevenzip.dylib"
 cp "$ROOT_DIR/THIRD_PARTY_LICENSES.md" "$APP_BUNDLE/Contents/Resources/THIRD_PARTY_LICENSES.md"
+cp "$ROOT_DIR/LICENSE" "$APP_BUNDLE/Contents/Resources/LICENSE"
+cp "$ROOT_DIR/docs/DISTRIBUTION.md" "$APP_BUNDLE/Contents/Resources/DISTRIBUTION.md"
+mkdir -p "$APP_BUNDLE/Contents/Resources/Licenses"
+cp "$ROOT_DIR/LICENSE" "$APP_BUNDLE/Contents/Resources/Licenses/Arkvello-MIT.txt"
+cp "$ROOT_DIR/THIRD_PARTY_LICENSES.md" "$ROOT_DIR/docs/DISTRIBUTION.md" \
+  "$APP_BUNDLE/Contents/Resources/Licenses/"
+cp "$ROOT_DIR/Vendor/7zip/DOC/License.txt" "$ROOT_DIR/Vendor/7zip/DOC/copying.txt" \
+  "$ROOT_DIR/Vendor/7zip/DOC/unRarLicense.txt" "$APP_BUNDLE/Contents/Resources/Licenses/"
 
 # Remove build-machine absolute rpath so bundle is portable across Macs
 install_name_tool -delete_rpath "$ROOT_DIR/Vendor/lib" "$APP_BUNDLE/Contents/MacOS/$EXEC_NAME" 2>/dev/null || true
@@ -111,7 +119,7 @@ for (filename, px) in sizes {
         ctx.fill(tRect.insetBy(dx: 0, dy: 0))
     }
 
-    // Bold "7z" mark on left
+    // App initial; the embedded engine keeps its own name and attribution.
     let paragraph = NSMutableParagraphStyle()
     paragraph.alignment = .left
     let attrs: [NSAttributedString.Key: Any] = [
@@ -119,7 +127,7 @@ for (filename, px) in sizes {
         .foregroundColor: NSColor.white,
         .paragraphStyle: paragraph
     ]
-    let str = NSAttributedString(string: "7z", attributes: attrs)
+    let str = NSAttributedString(string: "A", attributes: attrs)
     let strSize = str.size()
     str.draw(at: NSPoint(x: rect.minX + s * 0.11, y: (s - strSize.height) * 0.5))
 
@@ -141,17 +149,17 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
     <key>CFBundleDevelopmentRegion</key>
     <string>ru</string>
     <key>CFBundleDisplayName</key>
-    <string>7-Zip</string>
+    <string>Arkvello</string>
     <key>CFBundleExecutable</key>
-    <string>SevenZipMac</string>
+    <string>Arkvello</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
-    <string>io.github.izusx.sevenzipmac</string>
+    <string>io.github.izusx.arkvello</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>7-Zip</string>
+    <string>Arkvello</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -203,6 +211,9 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $APP_VERSION" "$APP_BUNDLE/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP_BUNDLE/Contents/Info.plist"
+
 # Declare imported archive UTIs and services without changing any default handlers.
 TMPDIR="$ROOT_DIR/.tmp" swift -module-cache-path "$ROOT_DIR/.modcache" - \
   "$ROOT_DIR/Resources/FinderIntegration.json" "$APP_BUNDLE/Contents/Info.plist" <<'SWIFT_PLIST'
@@ -223,7 +234,7 @@ plist["UTImportedTypeDeclarations"] = archiveTypes.map { item -> [String: Any] i
 plist["CFBundleDocumentTypes"] = [["CFBundleTypeName": "Archive", "CFBundleTypeRole": "Editor",
     "LSHandlerRank": "Alternate", "LSItemContentTypes": identifiers]]
 plist["NSServices"] = (configuration["services"] as! [[String]]).map { service -> [String: Any] in
-    ["NSMessage": service[0], "NSMenuItem": ["default": service[1]], "NSPortName": "SevenZipMac",
+    ["NSMessage": service[0], "NSMenuItem": ["default": service[1]], "NSPortName": "Arkvello",
      "NSSendTypes": ["public.file-url"],
      "NSRequiredContext": ["NSApplicationIdentifier": "com.apple.finder"], "NSTimeout": "120000"]
 }
@@ -234,7 +245,7 @@ plutil -lint "$APP_BUNDLE/Contents/Info.plist" >/dev/null
 echo "[4/4] Building Quick Look extension and signing inside out..."
 SIGN_IDENTITY="${CODE_SIGN_IDENTITY:--}"
 codesign --force --sign "$SIGN_IDENTITY" "$APP_BUNDLE/Contents/Frameworks/libsevenzip.dylib"
-bash "$ROOT_DIR/Scripts/build-quicklook.sh" "$APP_BUNDLE/Contents/PlugIns/SevenZipQuickLook.appex"
+ARCHS="$ARCHS" bash "$ROOT_DIR/Scripts/build-quicklook.sh" "$APP_BUNDLE/Contents/PlugIns/ArkvelloQuickLook.appex"
 codesign --force --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
 codesign --verify --deep --strict "$APP_BUNDLE"
 

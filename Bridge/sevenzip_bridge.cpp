@@ -1,5 +1,9 @@
 // sevenzip_bridge.cpp
 // In-process C ABI bridge over 7-Zip 26.06 C++ interfaces (LGPL-2.1+).
+// SPDX-License-Identifier: LGPL-2.1-or-later
+// Copyright (c) 2026 IzusX
+// This bridge is free software under GNU LGPL version 2.1 or later.
+// It is provided without warranty; see Vendor/7zip/DOC/copying.txt.
 
 #include "Common/Common.h"
 #include "Common/MyWindows.h"
@@ -128,6 +132,7 @@ public:
     bool PasswordIsDefined;
     bool PasswordWasRequested;
     bool PasswordWasMissing;
+    bool Cancelled;
     sz_password_cb PasswordCb;
     sz_progress_cb ProgressCb;
     void *UserData;
@@ -141,6 +146,7 @@ public:
         : PasswordIsDefined(password != nullptr && password[0] != '\0'),
           PasswordWasRequested(false),
           PasswordWasMissing(false),
+          Cancelled(false),
           PasswordCb(passwordCb),
           ProgressCb(progressCb),
           UserData(userData) {
@@ -155,6 +161,7 @@ public:
 
     HRESULT Open_CheckBreak() Z7_override {
         if (ProgressCb && !ProgressCb(0, 0, nullptr, UserData)) {
+            Cancelled = true;
             return E_ABORT;
         }
         return S_OK;
@@ -168,6 +175,7 @@ public:
         if (ProgressCb) {
             const uint64_t done = bytes ? static_cast<uint64_t>(*bytes) : 0;
             if (!ProgressCb(done, 0, nullptr, UserData)) {
+                Cancelled = true;
                 return E_ABORT;
             }
         }
@@ -645,6 +653,9 @@ public:
     UString Password;
     bool PasswordIsDefined;
     bool Cancelled;
+    bool OpenFailed;
+    bool PasswordWasMissing;
+    bool HadWrongPassword;
     sz_progress_cb ProgressCb;
     void *UserData;
     uint64_t TotalBytes;
@@ -654,6 +665,9 @@ public:
     CBridgeUpdateCallback(const char *password, sz_progress_cb progressCb, void *userData)
         : PasswordIsDefined(password != nullptr && password[0] != '\0'),
           Cancelled(false),
+          OpenFailed(false),
+          PasswordWasMissing(false),
+          HadWrongPassword(false),
           ProgressCb(progressCb),
           UserData(userData),
           TotalBytes(0) {
@@ -731,7 +745,13 @@ public:
 
     HRESULT SetOperationResult(Int32 /*opRes*/) Z7_override { return S_OK; }
 
-    HRESULT ReportExtractResult(Int32 opRes, Int32 /*isEncrypted*/, const wchar_t *name) Z7_override {
+    HRESULT ReportExtractResult(Int32 opRes, Int32 isEncrypted, const wchar_t *name) Z7_override {
+        if (opRes == NArchive::NExtract::NOperationResult::kWrongPassword ||
+            (isEncrypted && (opRes == NArchive::NExtract::NOperationResult::kCRCError ||
+                             opRes == NArchive::NExtract::NOperationResult::kDataError))) {
+            if (PasswordIsDefined) HadWrongPassword = true;
+            else PasswordWasMissing = true;
+        }
         if (opRes != NArchive::NExtract::NOperationResult::kOK && name) {
             if (!ErrorLog.empty()) ErrorLog += "\n";
             ErrorLog += "Extract error during update: " + UStringToStdUtf8(UString(name));
@@ -751,7 +771,7 @@ public:
     }
 
     HRESULT CryptoGetTextPassword(BSTR *password) Z7_override {
-        if (!PasswordIsDefined) return E_ABORT;
+        if (!PasswordIsDefined) { PasswordWasMissing = true; return E_ABORT; }
         return StringToBstr(Password, password);
     }
 
@@ -759,6 +779,7 @@ public:
 
     // IUpdateCallbackUI2
     HRESULT OpenResult(const CCodecs * /*codecs*/, const CArchiveLink & /*arcLink*/, const wchar_t * /*name*/, HRESULT result) Z7_override {
+        OpenFailed = result != S_OK;
         return result;
     }
     HRESULT StartScanning() Z7_override { return CheckBreak(); }
@@ -940,11 +961,12 @@ void sz_free_formats(sz_format_info_t *formats, uint32_t count) {
     std::free(formats);
 }
 
-sz_status_t sz_archive_open_with_options(
+sz_status_t sz_archive_open_with_progress(
     const char *path,
     const char *password,
     uint32_t code_page,
     sz_password_cb password_cb,
+    sz_progress_cb progress_cb,
     void *user_data,
     sz_archive_t **out_archive,
     char **out_error
@@ -954,6 +976,10 @@ sz_status_t sz_archive_open_with_options(
         return SZ_STATUS_ERR_INVALID_ARG;
     }
     *out_archive = nullptr;
+    if (progress_cb && !progress_cb(0, 0, nullptr, user_data)) {
+        SetError(out_error, "Archive open cancelled");
+        return SZ_STATUS_ERR_CANCELLED;
+    }
 
     try {
         HRESULT loadRes = S_OK;
@@ -988,7 +1014,7 @@ sz_status_t sz_archive_open_with_options(
         op.props = &props;
 #endif
 
-        CBridgeOpenCallback openCb(password, password_cb, nullptr, user_data);
+        CBridgeOpenCallback openCb(password, password_cb, progress_cb, user_data);
         const HRESULT hr = holder->link.Open3(op, &openCb);
         holder->headers_encrypted = openCb.PasswordWasRequested || holder->link.PasswordWasAsked;
 
@@ -1000,6 +1026,10 @@ sz_status_t sz_archive_open_with_options(
 
             delete holder;
 
+            if (openCb.Cancelled) {
+                SetError(out_error, "Archive open cancelled");
+                return SZ_STATUS_ERR_CANCELLED;
+            }
             if (missingPwd || (isEncryptedHdrErr && (!password || !*password))) {
                 SetError(out_error, "Archive headers are encrypted; password required");
                 return SZ_STATUS_ERR_PASSWORD_REQUIRED;
@@ -1022,6 +1052,15 @@ sz_status_t sz_archive_open_with_options(
         SetError(out_error, "Internal exception while opening archive");
         return SZ_STATUS_ERR_INTERNAL;
     }
+}
+
+sz_status_t sz_archive_open_with_options(
+    const char *path, const char *password, uint32_t code_page,
+    sz_password_cb password_cb, void *user_data,
+    sz_archive_t **out_archive, char **out_error
+) {
+    return sz_archive_open_with_progress(path, password, code_page, password_cb,
+                                        nullptr, user_data, out_archive, out_error);
 }
 
 sz_status_t sz_archive_open(
@@ -1783,7 +1822,19 @@ sz_status_t sz_archive_update(
             true
         );
 
-        if (updateCb.Cancelled || hr == E_ABORT) {
+        if (openCb.Cancelled || updateCb.Cancelled) {
+            SetError(out_error, "Archive modification cancelled");
+            return SZ_STATUS_ERR_CANCELLED;
+        }
+        if (openCb.PasswordWasMissing || updateCb.PasswordWasMissing) {
+            SetError(out_error, "Password required to modify encrypted archive");
+            return SZ_STATUS_ERR_PASSWORD_REQUIRED;
+        }
+        if (updateCb.HadWrongPassword || (updateCb.OpenFailed && openCb.PasswordWasRequested)) {
+            SetError(out_error, "Wrong password for encrypted archive");
+            return SZ_STATUS_ERR_WRONG_PASSWORD;
+        }
+        if (hr == E_ABORT) {
             SetError(out_error, "Archive update cancelled");
             return SZ_STATUS_ERR_CANCELLED;
         }
@@ -1887,9 +1938,17 @@ sz_status_t sz_archive_delete_items(
             true
         );
 
-        if (openCb.PasswordWasMissing) {
+        if (openCb.Cancelled || updateCb.Cancelled) {
+            SetError(out_error, "Archive modification cancelled");
+            return SZ_STATUS_ERR_CANCELLED;
+        }
+        if (openCb.PasswordWasMissing || updateCb.PasswordWasMissing) {
             SetError(out_error, "Password required to modify encrypted archive");
             return SZ_STATUS_ERR_PASSWORD_REQUIRED;
+        }
+        if (updateCb.HadWrongPassword || (updateCb.OpenFailed && openCb.PasswordWasRequested)) {
+            SetError(out_error, "Wrong password for encrypted archive");
+            return SZ_STATUS_ERR_WRONG_PASSWORD;
         }
         if (hr == E_NOTIMPL) {
             SetError(out_error, "Archive format does not support item deletion");
@@ -1967,9 +2026,17 @@ sz_status_t sz_archive_rename_items(
             true
         );
 
-        if (openCb.PasswordWasMissing) {
-            SetError(out_error, "Password required to rename items in encrypted archive");
+        if (openCb.Cancelled || updateCb.Cancelled) {
+            SetError(out_error, "Archive modification cancelled");
+            return SZ_STATUS_ERR_CANCELLED;
+        }
+        if (openCb.PasswordWasMissing || updateCb.PasswordWasMissing) {
+            SetError(out_error, "Password required to modify encrypted archive");
             return SZ_STATUS_ERR_PASSWORD_REQUIRED;
+        }
+        if (updateCb.HadWrongPassword || (updateCb.OpenFailed && openCb.PasswordWasRequested)) {
+            SetError(out_error, "Wrong password for encrypted archive");
+            return SZ_STATUS_ERR_WRONG_PASSWORD;
         }
         if (hr == E_NOTIMPL) {
             SetError(out_error, "Archive format does not support renaming");

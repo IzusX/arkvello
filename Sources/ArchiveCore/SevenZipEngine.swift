@@ -305,6 +305,11 @@ public enum SevenZipEngine {
     }
 }
 
+// Ownership is transferred exactly once from a deinitializing OpenArchive to GCD.
+private struct RetiredArchiveHandle: @unchecked Sendable {
+    let pointer: OpaquePointer
+}
+
 public final class OpenArchive: @unchecked Sendable {
     public let url: URL
     public let encoding: ArchiveNameEncoding
@@ -318,11 +323,12 @@ public final class OpenArchive: @unchecked Sendable {
         url: URL,
         password: String? = nil,
         encoding: ArchiveNameEncoding = .auto,
-        passwordProvider: (() -> String?)? = nil
+        passwordProvider: (() -> String?)? = nil,
+        progress: ((ArchiveProgress) -> Bool)? = nil
     ) throws {
         self.url = url
         self.encoding = encoding
-        let ctx = CallbackContext(passwordProvider: passwordProvider)
+        let ctx = CallbackContext(progressHandler: progress, passwordProvider: passwordProvider)
         let userData = Unmanaged.passUnretained(ctx).toOpaque()
 
         var rawHandle: OpaquePointer?
@@ -330,11 +336,12 @@ public final class OpenArchive: @unchecked Sendable {
 
         let openStatus: sz_status_t = url.path.withCString { pathC in
             withOptionalCString(password?.isEmpty == false ? password : nil) { pwdC in
-                sz_archive_open_with_options(
+                sz_archive_open_with_progress(
                     pathC,
                     pwdC,
                     encoding.rawValue,
                     passwordProvider == nil ? nil : cPasswordBridge,
+                    progress == nil ? nil : cProgressBridge,
                     userData,
                     &rawHandle,
                     &errPtr
@@ -349,7 +356,7 @@ public final class OpenArchive: @unchecked Sendable {
 
         do {
             self.summary = try Self.readSummary(handle: rawHandle)
-            self.entries = try Self.readEntries(handle: rawHandle)
+            self.entries = try Self.readEntries(handle: rawHandle, progress: progress)
         } catch {
             sz_archive_close(rawHandle)
             self.handle = nil
@@ -358,7 +365,12 @@ public final class OpenArchive: @unchecked Sendable {
     }
 
     deinit {
-        close()
+        // The last reference owns this handle exclusively. Native teardown may free
+        // a large metadata index; schedule it off the caller (often the main actor).
+        if let handle {
+            let retired = RetiredArchiveHandle(pointer: handle)
+            DispatchQueue.global(qos: .utility).async { sz_archive_close(retired.pointer) }
+        }
     }
 
     public func close() {
@@ -634,7 +646,7 @@ public final class OpenArchive: @unchecked Sendable {
         )
     }
 
-    private static func readEntries(handle: OpaquePointer) throws -> [ArchiveEntry] {
+    private static func readEntries(handle: OpaquePointer, progress: ((ArchiveProgress) -> Bool)?) throws -> [ArchiveEntry] {
         var rawItems: UnsafeMutablePointer<sz_item_info_t>?
         var count: UInt32 = 0
         var errPtr: UnsafeMutablePointer<CChar>?
@@ -655,6 +667,9 @@ public final class OpenArchive: @unchecked Sendable {
         result.reserveCapacity(Int(count))
 
         for item in buf {
+            if let progress, !progress(ArchiveProgress(completedBytes: UInt64(result.count), totalBytes: UInt64(count), currentItem: nil)) {
+                throw ArchiveError.cancelled
+            }
             let path = item.path.map { String(cString: $0) } ?? ""
             let name = path.split(separator: "/").last.map(String.init) ?? path
             let mtime: Date?

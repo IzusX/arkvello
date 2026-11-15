@@ -3,24 +3,6 @@ import ArchiveCore
 import SwiftUI
 import UniformTypeIdentifiers
 
-private final class ArchivePromiseContext: NSObject {
-    let archiveURL: URL
-    let itemPath: String
-    let itemName: String
-    let stripPrefix: String
-    let password: String?
-    let encoding: ArchiveNameEncoding
-
-    init(archiveURL: URL, itemPath: String, itemName: String, stripPrefix: String, password: String?, encoding: ArchiveNameEncoding) {
-        self.archiveURL = archiveURL
-        self.itemPath = itemPath
-        self.itemName = itemName
-        self.stripPrefix = stripPrefix
-        self.password = password
-        self.encoding = encoding
-    }
-}
-
 final class KeyHandlingTableView: NSTableView {
     var onKeyAction: ((NSEvent) -> Bool)?
     var onBuildContextMenu: ((Int) -> NSMenu?)?
@@ -144,7 +126,6 @@ struct FilePaneTableView: NSViewRepresentable {
         coordinator.appVM = appVM
         guard let tableView = coordinator.tableView else { return }
 
-        let newRowIDs = pane.rows.map(\.id)
         let isInsideArc = pane.location.isInsideArchive
 
         // Show archive-only columns (`Сжатый`, `CRC`, `Метод`) when browsing inside an archive
@@ -168,7 +149,9 @@ struct FilePaneTableView: NSViewRepresentable {
             }
         }
 
-        if coordinator.renderedRows != pane.rows {
+        if coordinator.renderedRevision != pane.rowsRevision {
+            coordinator.renderedRevision = pane.rowsRevision
+            let newRowIDs = pane.rows.map(\.id)
             coordinator.renderedRows = pane.rows
             coordinator.isProgrammaticSelectionSync = true
             tableView.reloadData()
@@ -198,15 +181,16 @@ struct FilePaneTableView: NSViewRepresentable {
         var appVM: AppViewModel
         weak var tableView: KeyHandlingTableView?
 
+        var renderedRevision: UInt64?
         var renderedRows: [PaneRowItem] = []
         var renderedRowIDs: [String] = []
         var lastSyncedSelection: Set<String> = []
         var isProgrammaticSelectionSync = false
         var wasActivePane = false
 
-        private let promiseQueue: OperationQueue = {
+        nonisolated private let promiseQueue: OperationQueue = {
             let q = OperationQueue()
-            q.name = "com.sevenzipmac.filepromises"
+            q.name = "io.github.izusx.arkvello.filepromises"
             q.qualityOfService = .userInitiated
             q.maxConcurrentOperationCount = 2
             return q
@@ -226,8 +210,8 @@ struct FilePaneTableView: NSViewRepresentable {
         func syncTableSelection(to targetIDs: Set<String>, scrollToFirst: Bool) {
             guard let tableView else { return }
             var indexSet = IndexSet()
-            for (idx, row) in renderedRows.enumerated() where targetIDs.contains(row.id) {
-                indexSet.insert(idx)
+            for id in targetIDs {
+                if let index = pane.rowIndexByID[id] { indexSet.insert(index) }
             }
             if indexSet.isEmpty && !renderedRows.isEmpty && scrollToFirst {
                 indexSet.insert(0)
@@ -367,7 +351,8 @@ struct FilePaneTableView: NSViewRepresentable {
             }
 
             iconView.image = item.icon
-            label.stringValue = item.name
+            label.stringValue = item.displayLabel(showRelativePath: pane.isShowingFlattenedPaths, stripPrefix: pane.location.archiveSubpath)
+            label.toolTip = label.stringValue
             label.font = .systemFont(
                 ofSize: 12.5,
                 weight: item.isArchiveFile ? .medium : .regular
@@ -691,7 +676,8 @@ struct FilePaneTableView: NSViewRepresentable {
                     itemName: node.name,
                     stripPrefix: node.parentFolderPath,
                     password: pane.currentArchivePassword,
-                    encoding: pane.archiveEncoding
+                    encoding: pane.archiveEncoding,
+                    content: pane.retainedArchiveContent
                 )
                 return provider
             }
@@ -705,7 +691,7 @@ struct FilePaneTableView: NSViewRepresentable {
         }
 
         nonisolated func operationQueue(for filePromiseProvider: NSFilePromiseProvider) -> OperationQueue {
-            MainActor.assumeIsolated { promiseQueue }
+            promiseQueue
         }
 
         nonisolated func filePromiseProvider(
@@ -719,32 +705,7 @@ struct FilePaneTableView: NSViewRepresentable {
             }
 
             do {
-                let opened = try OpenArchive(url: ctx.archiveURL, password: ctx.password, encoding: ctx.encoding)
-                defer { opened.close() }
-                let tree = VirtualArchiveTree(entries: opened.entries)
-                let indices = tree.extractionIndices(for: [ctx.itemPath])
-
-                let tempSlot = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("SevenZipMac-Promise-\(UUID().uuidString)", isDirectory: true)
-                try FileManager.default.createDirectory(at: tempSlot, withIntermediateDirectories: true)
-                defer { try? FileManager.default.removeItem(at: tempSlot) }
-
-                try opened.extract(
-                    indices: indices,
-                    to: tempSlot,
-                    stripPrefix: ctx.stripPrefix,
-                    fullPaths: true,
-                    overwrite: .overwriteAll,
-                    password: ctx.password
-                )
-
-                let extractedCandidate = tempSlot.appendingPathComponent(ctx.itemName)
-                if FileManager.default.fileExists(atPath: url.path) {
-                    try FileManager.default.removeItem(at: url)
-                }
-                if FileManager.default.fileExists(atPath: extractedCandidate.path) {
-                    try FileManager.default.moveItem(at: extractedCandidate, to: url)
-                }
+                try ctx.write(to: url)
                 completionHandler(nil)
             } catch {
                 completionHandler(error)

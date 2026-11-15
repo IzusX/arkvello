@@ -5,7 +5,7 @@ import Testing
 
 @Suite("Metadata safety (temporary fixtures only)")
 struct MetadataSafetyTests {
-    private let attribute = "io.sevenzipmac.safety"
+    private let attribute = "io.arkvello.safety"
 
     private func temporaryDirectory() throws -> URL {
         guard let tempPath = realpath(FileManager.default.temporaryDirectory.path, nil) else {

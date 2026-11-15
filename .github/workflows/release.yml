@@ -1,0 +1,133 @@
+name: Arkvello Release
+
+# Stable vMAJOR.MINOR.PATCH tags only. No manual event can publish a release.
+on:
+  push:
+    tags:
+      - 'v[0-9]*.[0-9]*.[0-9]*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: validate
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Validate tag and toolchain
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo 'Expected stable vMAJOR.MINOR.PATCH tag.' >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          xcodebuild -version
+          swift --version
+          swift --version | head -n 1 | /usr/bin/grep -Eq 'Swift version 6\.'
+      - name: Build universal engine before native tests
+        run: ARCHS='arm64 x86_64' bash Scripts/build-7zip.sh
+      - name: Run tests on runner native architecture
+        run: swift test
+      - name: Build universal application
+        env:
+          APP_VERSION: ${{ steps.version.outputs.version }}
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: ARCHS='arm64 x86_64' bash Scripts/build-app.sh
+      - name: Package DMG
+        env:
+          APP_VERSION: ${{ steps.version.outputs.version }}
+        run: bash Scripts/build-dmg.sh
+      - name: Verify source and archive entire versioned tree
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Require representative vendor sources and complete upstream license texts.
+          for FILE in Vendor/7zip/C/7z.h Vendor/7zip/CPP/7zip/Archive/IArchive.h \
+            Vendor/7zip/DOC/License.txt Vendor/7zip/DOC/copying.txt \
+            Vendor/7zip/DOC/unRarLicense.txt Bridge/sevenzip_bridge.cpp \
+            LICENSE THIRD_PARTY_LICENSES.md docs/DISTRIBUTION.md; do
+            git cat-file -e "HEAD:$FILE"
+          done
+          # Reject a submodule in place of the vendored source directory.
+          test "$(git ls-tree HEAD Vendor/7zip | awk '{print $1}')" = 040000
+          git diff --exit-code HEAD -- .
+          # Build outputs are ignored; every release input must be committed.
+          UNTRACKED="$(git ls-files --others --exclude-standard)"
+          test -z "$UNTRACKED" || { printf 'Untracked sources:\n%s\n' "$UNTRACKED"; exit 1; }
+          git archive --format=tar --prefix="Arkvello-$VERSION-source/" HEAD | gzip -n > "dist/Arkvello-$VERSION-source.tar.gz"
+      - name: Generate actual cask and all asset checksums
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash Scripts/generate-cask.sh "$VERSION" "$REPOSITORY" "dist/Arkvello-$VERSION-universal.dmg" > dist/arkvello.rb
+          cd dist
+          shasum -a 256 "Arkvello-$VERSION-universal.dmg" "Arkvello-$VERSION-source.tar.gz" arkvello.rb > SHA256SUMS
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: release-assets
+          if-no-files-found: error
+          path: |
+            dist/Arkvello-*-universal.dmg
+            dist/Arkvello-*-source.tar.gz
+            dist/arkvello.rb
+            dist/SHA256SUMS
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: release-assets
+          path: assets
+      - name: Publish tag release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd assets
+          sha256sum --check SHA256SUMS
+          cat > /tmp/release-notes.md <<'NOTES'
+          macOS 14+ universal application (arm64 and x86_64).
+
+          Arkvello is an independent archive manager with its own macOS interface,
+          powered by the embedded 7-Zip engine. It is not an official 7-Zip release
+          and is not affiliated with or endorsed by Igor Pavlov or the 7-Zip project.
+          Original application code is MIT-licensed; the engine and bridge retain
+          their LGPL/BSD/unRAR terms. Full notices are included in the DMG and app.
+
+          Ad-hoc signed only: not Developer ID signed or Apple notarized. Automated tests and native builds run on Apple Silicon and Intel macOS 15 runners. Interactive Intel/macOS 14 behavior and Finder extension activation require separate verification. See DISTRIBUTION.md in the DMG/source archive for installation and Gatekeeper instructions.
+
+          The source archive contains the entire versioned project including the vendored 7-Zip sources and license texts. Keep it available alongside the DMG.
+
+          Homebrew: brew install --cask IzusX/tap/arkvello
+          The separate IzusX/homebrew-tap repository checks for releases daily; its update workflow can also be started manually after publication.
+          NOTES
+          gh release create "$TAG" --verify-tag --title "Arkvello ${TAG#v}" --notes-file /tmp/release-notes.md ./*

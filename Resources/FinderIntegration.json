@@ -8,28 +8,28 @@
     ["org.gnu.gnu-zip-tar-archive", "Gzip TAR archive", ["tgz"], "application/x-compressed-tar"],
     ["public.tar-bzip2-archive", "Bzip2 TAR archive", ["tbz", "tbz2"], "application/x-bzip-compressed-tar"],
     ["org.tukaani.tar-xz-archive", "XZ TAR archive", ["txz"], "application/x-xz-compressed-tar"],
-    ["io.github.izusx.sevenzipmac.tar-zstd-archive", "Zstandard TAR archive", ["tzst"], "application/x-zstd-compressed-tar"],
+    ["io.github.izusx.arkvello.tar-zstd-archive", "Zstandard TAR archive", ["tzst"], "application/x-zstd-compressed-tar"],
     ["org.gnu.gnu-zip-archive", "Gzip archive", ["gz", "gzip"], "application/gzip"],
     ["public.bzip2-archive", "Bzip2 archive", ["bz2", "bzip2"], "application/x-bzip2"],
     ["org.tukaani.xz-archive", "XZ archive", ["xz"], "application/x-xz"],
     ["org.tukaani.lzma-archive", "LZMA archive", ["lzma"], "application/x-lzma"],
-    ["io.github.izusx.sevenzipmac.zstandard-archive", "Zstandard archive", ["zst", "zstd"], "application/zstd"],
+    ["io.github.izusx.arkvello.zstandard-archive", "Zstandard archive", ["zst", "zstd"], "application/zstd"],
     ["com.microsoft.cab", "Cabinet archive", ["cab"], "application/vnd.ms-cab-compressed"],
     ["public.iso-image", "ISO disk image", ["iso"], "application/x-iso9660-image"],
     ["com.apple.disk-image-udif", "Apple disk image", ["dmg"], "application/x-apple-diskimage"],
-    ["io.github.izusx.sevenzipmac.wim-archive", "Windows imaging archive", ["wim", "swm", "esd"], "application/x-ms-wim"],
+    ["io.github.izusx.arkvello.wim-archive", "Windows imaging archive", ["wim", "swm", "esd"], "application/x-ms-wim"],
     ["com.apple.xar-archive", "XAR archive", ["xar"], "application/x-xar"],
     ["com.apple.installer-package-archive", "Installer package archive", ["pkg"], "application/vnd.apple.installer+xml"],
     ["com.redhat.rpm-archive", "RPM archive", ["rpm"], "application/x-rpm"],
     ["org.debian.deb-archive", "Debian package archive", ["deb"], "application/vnd.debian.binary-package"],
     ["public.cpio-archive", "CPIO archive", ["cpio"], "application/x-cpio"],
-    ["io.github.izusx.sevenzipmac.split-archive", "Split archive segment", ["001"], "application/octet-stream"]
+    ["io.github.izusx.arkvello.split-archive", "Split archive segment", ["001"], "application/octet-stream"]
   ],
   "services": [
-    ["serviceExtractHere", "7-Zip/Extract Here"],
-    ["serviceExtractToSubfolder", "7-Zip/Extract to Subfolder"],
-    ["serviceQuickCompress7z", "7-Zip/Compress to 7z"],
-    ["serviceCompressDialog", "7-Zip/Add to Archive…"],
-    ["serviceTestArchive", "7-Zip/Test Archive"]
+    ["serviceExtractHere", "Arkvello/Extract Here"],
+    ["serviceExtractToSubfolder", "Arkvello/Extract to Subfolder"],
+    ["serviceQuickCompress7z", "Arkvello/Compress to 7z"],
+    ["serviceCompressDialog", "Arkvello/Add to Archive…"],
+    ["serviceTestArchive", "Arkvello/Test Archive"]
   ]
 }

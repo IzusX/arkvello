@@ -17,7 +17,7 @@ struct PersistedSession: Codable {
 }
 
 enum SessionStore {
-    private static let key = "io.github.izusx.sevenzipmac.session.v2"
+    private static let key = "io.github.izusx.arkvello.session.v2"
 
     static func load() -> PersistedSession? {
         guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
@@ -83,7 +83,7 @@ enum DefaultArchiverManager {
         if mainURL.pathExtension == "app" {
             return mainURL
         }
-        let installed = URL(fileURLWithPath: "/Applications/7-Zip.app")
+        let installed = URL(fileURLWithPath: "/Applications/Arkvello.app")
         if FileManager.default.fileExists(atPath: installed.path) {
             return installed
         }
@@ -91,7 +91,7 @@ enum DefaultArchiverManager {
     }
 
     static var isInstalledInApplications: Bool {
-        FileManager.default.fileExists(atPath: "/Applications/7-Zip.app")
+        FileManager.default.fileExists(atPath: "/Applications/Arkvello.app")
     }
 
     static func currentDefaultHandlerName(forExtension ext: String) -> String {
@@ -141,10 +141,10 @@ enum DefaultArchiverManager {
     static func installToApplicationsAndRegisterExtensions() throws -> URL {
         let sourceBundle = Bundle.main.bundleURL
         guard sourceBundle.pathExtension == "app" else {
-            throw ArchiveError.invalidArgument("Запустите собранный 7-Zip.app для копирования в /Applications")
+            throw ArchiveError.invalidArgument("Запустите собранный Arkvello.app для копирования в /Applications")
         }
 
-        let targetBundle = URL(fileURLWithPath: "/Applications/7-Zip.app")
+        let targetBundle = URL(fileURLWithPath: "/Applications/Arkvello.app")
         let fm = FileManager.default
         if sourceBundle.resolvingSymlinksInPath() != targetBundle.resolvingSymlinksInPath() {
             try StagedReplacement.publish(at: targetBundle) { stagedBundle in
@@ -164,7 +164,7 @@ enum DefaultArchiverManager {
             proc.waitUntilExit()
         }
 
-        let qlAppex = targetBundle.appendingPathComponent("Contents/PlugIns/SevenZipQuickLook.appex")
+        let qlAppex = targetBundle.appendingPathComponent("Contents/PlugIns/ArkvelloQuickLook.appex")
         if fm.fileExists(atPath: qlAppex.path) {
             let pk = Process()
             pk.executableURL = URL(fileURLWithPath: "/usr/bin/pluginkit")
@@ -174,7 +174,7 @@ enum DefaultArchiverManager {
 
             let pkEnable = Process()
             pkEnable.executableURL = URL(fileURLWithPath: "/usr/bin/pluginkit")
-            pkEnable.arguments = ["-e", "use", "-i", "io.github.izusx.sevenzipmac.quicklook"]
+            pkEnable.arguments = ["-e", "use", "-i", "io.github.izusx.arkvello.quicklook"]
             try? pkEnable.run()
             pkEnable.waitUntilExit()
         }
@@ -219,7 +219,7 @@ struct SettingsSheetView: View {
                     HStack {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(DefaultArchiverManager.isInstalledInApplications
-                                 ? "Установлен в /Applications/7-Zip.app"
+                                 ? "Установлен в /Applications/Arkvello.app"
                                  : "Приложение запущено вне папки /Applications")
                                 .font(.callout.weight(.medium))
                             Text("Копирование в /Applications активирует пункты правой кнопки мыши в Finder («Службы / Быстрые действия») и предпросмотр архивов по пробелу.")
@@ -267,7 +267,7 @@ struct SettingsSheetView: View {
                     }
 
                     HStack {
-                        Button("Назначить 7-Zip по умолчанию для выбранных") {
+                        Button("Назначить Arkvello по умолчанию для выбранных") {
                             let exts = DefaultArchiverManager.groups
                                 .filter { selectedGroupIDs.contains($0.id) }
                                 .flatMap(\.extensions)

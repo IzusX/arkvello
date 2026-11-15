@@ -10,7 +10,7 @@ public enum StagedReplacement {
         let fm = FileManager.default
         let parent = destination.deletingLastPathComponent().resolvingSymlinksInPath()
         let target = parent.appendingPathComponent(destination.lastPathComponent)
-        let workspace = parent.appendingPathComponent(".sevenzip-publish-\(UUID().uuidString)", isDirectory: true)
+        let workspace = parent.appendingPathComponent(".arkvello-publish-\(UUID().uuidString)", isDirectory: true)
         try fm.createDirectory(at: workspace, withIntermediateDirectories: false)
         var retainWorkspace = false
         defer { if !retainWorkspace { try? fm.removeItem(at: workspace) } }

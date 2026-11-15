@@ -314,6 +314,12 @@ public struct ArchiveProgress: Equatable, Sendable {
     public let totalBytes: UInt64
     public let currentItem: String?
 
+    public init(completedBytes: UInt64, totalBytes: UInt64, currentItem: String? = nil) {
+        self.completedBytes = completedBytes
+        self.totalBytes = totalBytes
+        self.currentItem = currentItem
+    }
+
     public var fraction: Double? {
         guard totalBytes > 0 else { return nil }
         return min(1.0, Double(completedBytes) / Double(totalBytes))

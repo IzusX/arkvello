@@ -59,7 +59,6 @@ struct PasswordPromptSheet: View {
                 Spacer()
                 Button("Отмена", role: .cancel) {
                     request.completion(nil, false)
-                    dismiss()
                 }
                 .keyboardShortcut(.cancelAction)
 
@@ -77,7 +76,6 @@ struct PasswordPromptSheet: View {
     private func submit() {
         guard !password.isEmpty else { return }
         request.completion(password, saveToKeychain)
-        dismiss()
     }
 }
 
@@ -414,7 +412,6 @@ struct OverwriteConflictSheetView: View {
 
     private func respond(_ decision: OverwriteDecision) {
         request.respond(decision)
-        dismiss()
     }
 
     var body: some View {

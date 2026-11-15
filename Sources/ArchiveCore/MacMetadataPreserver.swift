@@ -42,7 +42,7 @@ public enum MacMetadataPreserver {
         }
         defer { free(tempPath) }
         let stageRoot = URL(fileURLWithPath: String(cString: tempPath), isDirectory: true)
-            .appendingPathComponent("SevenZipMac-XattrStage-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("Arkvello-XattrStage-\(UUID().uuidString)", isDirectory: true)
         try fm.createDirectory(at: stageRoot, withIntermediateDirectories: true)
 
         var completed = false

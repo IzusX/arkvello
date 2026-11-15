@@ -205,7 +205,7 @@ struct ArchiveCoreTests {
         try "junk".write(to: dsStore, atomically: true, encoding: .utf8)
 
         // Attach custom macOS extended attribute to `launcher.sh`
-        let attrName = "io.sevenzipmac.customtag"
+        let attrName = "io.arkvello.customtag"
         let attrVal = Array("TaggedForMac-42".utf8)
         let setRc = appFile.path.withCString { pathC in
             setxattr(pathC, attrName, attrVal, attrVal.count, 0, 0)
@@ -363,7 +363,7 @@ struct ArchiveCoreTests {
 
     @Test("KeychainPasswordStore saves, retrieves, updates, and deletes archive passwords")
     func keychainStoreRoundtrip() {
-        let testService = "io.github.izusx.sevenzipmac.tests.\(UUID().uuidString)"
+        let testService = "io.github.izusx.arkvello.tests.\(UUID().uuidString)"
         let fakeArc = URL(fileURLWithPath: "/tmp/vault-\(UUID().uuidString).7z")
         defer { KeychainPasswordStore.removePassword(for: fakeArc, service: testService) }
 

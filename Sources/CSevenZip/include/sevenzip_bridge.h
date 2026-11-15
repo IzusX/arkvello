@@ -154,6 +154,14 @@ sz_status_t sz_archive_open_with_options(
     char **out_error
 );
 
+// Cancellation is cooperative: handlers that report opening progress can abort early.
+// Existing open entry points remain ABI-compatible.
+sz_status_t sz_archive_open_with_progress(
+    const char *path, const char *password, uint32_t code_page,
+    sz_password_cb password_cb, sz_progress_cb progress_cb, void *user_data,
+    sz_archive_t **out_archive, char **out_error
+);
+
 void sz_archive_close(sz_archive_t *archive);
 
 sz_status_t sz_archive_get_summary(

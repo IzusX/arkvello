@@ -1,4 +1,4 @@
-# 7-Zip for macOS (SevenZipMac) — Product & UX Specification
+# Arkvello — Product & UX Specification
 
 ## 1. Назначение продукта
 Нативный файловый менеджер-архиватор для macOS на базе официального движка **7-Zip 26.06** (встроенного в процесс через динамическую библиотеку `libsevenzip.dylib`), объединяющий **функциональную логику классического 7-Zip File Manager (`7zFM`)** с **современным нативным интерфейсом уровня macOS Pro (ForkLift / Transmit)**.

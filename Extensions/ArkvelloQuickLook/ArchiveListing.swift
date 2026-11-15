@@ -1,21 +1,5 @@
 import CSevenZip
 import Foundation
-import QuickLookUI
-import UniformTypeIdentifiers
-
-/// Metadata-only previews. No extraction, password callbacks, keychain or shared app state.
-@objc(SevenZipPreviewProvider)
-final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
-    func providePreview(for request: QLFilePreviewRequest,
-                        completionHandler handler: @escaping (QLPreviewReply?, Error?) -> Void) {
-        let url = request.fileURL
-        let reply = QLPreviewReply(dataOfContentType: .html, contentSize: CGSize(width: 760, height: 560)) { reply in
-            reply.stringEncoding = .utf8
-            return ArchiveListing.html(for: url)
-        }
-        handler(reply, nil)
-    }
-}
 
 // Internal so the same metadata renderer can be exercised without launching Finder.
 enum ArchiveListing {
@@ -36,7 +20,7 @@ enum ArchiveListing {
             return notice("This file cannot be read for preview.")
         }
         guard Int64(size) <= maxArchiveBytes else {
-            return notice("Preview is limited to archives up to 512 MiB. Open this archive in 7-Zip to browse it.")
+            return notice("Preview is limited to archives up to 512 MiB. Open this archive in Arkvello to browse it.")
         }
 
         var archive: OpaquePointer?
@@ -49,9 +33,9 @@ enum ArchiveListing {
         }
         guard status == SZ_STATUS_OK, let archive else {
             if status == SZ_STATUS_ERR_PASSWORD_REQUIRED || status == SZ_STATUS_ERR_WRONG_PASSWORD {
-                return notice("The archive's file names are encrypted. Open it in 7-Zip to enter a password. Quick Look does not access saved passwords.")
+                return notice("The archive's file names are encrypted. Open it in Arkvello to enter a password. Quick Look does not access saved passwords.")
             }
-            return notice("The archive cannot be listed. It may be damaged, unsupported, or require a password. Open it in 7-Zip for details.")
+            return notice("The archive cannot be listed. It may be damaged, unsupported, or require a password. Open it in Arkvello for details.")
         }
 
         var summary = sz_archive_summary_t()
@@ -63,11 +47,11 @@ enum ArchiveListing {
         }
         guard summaryStatus == SZ_STATUS_OK else { return notice("Archive metadata is unavailable.") }
         guard !summary.headers_encrypted else {
-            return notice("The archive's file names are encrypted. Open it in 7-Zip to enter a password. Quick Look does not access saved passwords.")
+            return notice("The archive's file names are encrypted. Open it in Arkvello to enter a password. Quick Look does not access saved passwords.")
         }
         // The bridge returns the complete metadata array; check its size before requesting it.
         guard summary.item_count <= maxMetadataItems else {
-            return notice("This archive contains \(summary.item_count) entries, exceeding the 20,000-entry preview limit. Open it in 7-Zip to browse it.")
+            return notice("This archive contains \(summary.item_count) entries, exceeding the 20,000-entry preview limit. Open it in Arkvello to browse it.")
         }
 
         var items: UnsafeMutablePointer<sz_item_info_t>?
@@ -95,7 +79,7 @@ enum ArchiveListing {
         }
         body += "</tbody></table>"
         if shown < Int(count) {
-            body += "<p>Showing \(shown) of \(count) entries. Open in 7-Zip for the complete listing.</p>"
+            body += "<p>Showing \(shown) of \(count) entries. Open in Arkvello for the complete listing.</p>"
         }
         return document(title: title, body: body)
     }

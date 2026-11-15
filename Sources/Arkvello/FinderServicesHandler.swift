@@ -22,6 +22,7 @@ final class FinderServicesHandler: NSObject {
     ) {
         let urls = readPasteboardURLs(pboard)
         guard !urls.isEmpty else { return }
+        guard appVM.beginFinderService() else { return }
         NSApp.activate(ignoringOtherApps: true)
         appVM.finderServiceExtract(urls: urls, alwaysCreateSubfolder: false)
     }
@@ -33,6 +34,7 @@ final class FinderServicesHandler: NSObject {
     ) {
         let urls = readPasteboardURLs(pboard)
         guard !urls.isEmpty else { return }
+        guard appVM.beginFinderService() else { return }
         NSApp.activate(ignoringOtherApps: true)
         appVM.finderServiceExtract(urls: urls, alwaysCreateSubfolder: true)
     }
@@ -44,6 +46,7 @@ final class FinderServicesHandler: NSObject {
     ) {
         let urls = readPasteboardURLs(pboard)
         guard !urls.isEmpty else { return }
+        guard appVM.beginFinderService() else { return }
         NSApp.activate(ignoringOtherApps: true)
         appVM.finderServiceQuickCompress7z(urls: urls)
     }
@@ -55,6 +58,7 @@ final class FinderServicesHandler: NSObject {
     ) {
         let urls = readPasteboardURLs(pboard)
         guard !urls.isEmpty else { return }
+        guard appVM.beginFinderService() else { return }
         NSApp.activate(ignoringOtherApps: true)
         appVM.finderServiceOpenCompressDialog(urls: urls)
     }
@@ -66,6 +70,7 @@ final class FinderServicesHandler: NSObject {
     ) {
         let urls = readPasteboardURLs(pboard)
         guard let first = urls.first else { return }
+        guard appVM.beginFinderService() else { return }
         NSApp.activate(ignoringOtherApps: true)
         appVM.openExternalURLs([first])
         appVM.testCurrentArchive()

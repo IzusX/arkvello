@@ -5,7 +5,7 @@ import SwiftUI
 struct MainWindowView: View {
     @ObservedObject var appVM: AppViewModel
 
-    var body: some View {
+    private var browser: some View {
         NavigationSplitView {
             SidebarView(appVM: appVM)
                 .navigationSplitViewColumnWidth(min: 175, ideal: 205, max: 260)
@@ -158,7 +158,24 @@ struct MainWindowView: View {
                 .help(appVM.isDualPane ? "Переключить в 1 панель (F9)" : "Двухпанельный режим (F9)")
             }
         }
-        .sheet(item: $appVM.passwordPrompt) { req in
+    }
+
+    var body: some View {
+        Group {
+            if appVM.isFinderOperationWindow {
+                FinderOperationView(appVM: appVM)
+            } else {
+                browser
+            }
+        }
+        .onChange(of: appVM.compressSheet?.id) { old, new in
+            if old != nil && new == nil { appVM.finishFinderServiceIfIdle() }
+        }
+        .onChange(of: appVM.passwordPrompt?.id) { old, new in
+            if old != nil && new == nil { appVM.finishFinderServiceIfIdle() }
+        }
+        .sheet(item: Binding(get: { appVM.passwordPrompt }, set: { if $0 == nil { appVM.passwordPrompts.dismiss() } }),
+               onDismiss: { appVM.passwordPrompts.didDismiss(); appVM.finishFinderServiceIfIdle() }) { req in
             PasswordPromptSheet(request: req)
         }
         .sheet(item: $appVM.compressSheet) { req in
@@ -218,7 +235,7 @@ struct MainWindowView: View {
         .sheet(item: $appVM.checksumSheet) { req in
             ChecksumSheetView(request: req)
         }
-        .sheet(item: $appVM.overwriteConflictSheet) { req in
+        .sheet(item: $appVM.overwriteConflictSheet, onDismiss: { appVM.finishOverwritePrompt() }) { req in
             OverwriteConflictSheetView(request: req)
                 .interactiveDismissDisabled()
         }
@@ -346,6 +363,15 @@ private struct FilePaneContainerView: View {
 
             Divider()
 
+            if pane.isNestedArchive {
+                Text("Вложенный архив открыт только для чтения. Для изменения сначала извлеките его на диск.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                Divider()
+            }
+
             if let err = pane.errorBanner {
                 HStack(spacing: 8) {
                     Image(systemName: "exclamationmark.circle.fill")
@@ -373,7 +399,18 @@ private struct FilePaneContainerView: View {
 
             Divider()
 
-            PaneFooterBar(pane: pane)
+            if pane.isLoading {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Загрузка…").font(.callout)
+                    Spacer()
+                    Button("Отменить") { pane.cancelLoading() }.controlSize(.small)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+            } else {
+                PaneFooterBar(pane: pane)
+            }
         }
         .background(Color(nsColor: .controlBackgroundColor))
     }
@@ -436,7 +473,7 @@ private struct PaneBreadcrumbBar: View {
                             .font(.system(size: 9.5, weight: .medium))
                             .foregroundStyle(.secondary)
                     }
-                    if !summary.isUpdatable {
+                    if !pane.canModifyArchive {
                         Text("ЧТЕНИЕ")
                             .font(.system(size: 9.5, weight: .medium))
                             .foregroundStyle(.secondary)

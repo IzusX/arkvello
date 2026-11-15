@@ -59,7 +59,7 @@ struct DiskEntryInfo: Equatable, Hashable, Sendable {
     let posixAttributes: String
 }
 
-enum PaneRowItem: Identifiable, Equatable {
+enum PaneRowItem: Identifiable, Equatable, Sendable {
     case parentDirectory
     case disk(DiskEntryInfo)
     case archive(VirtualArchiveNode)

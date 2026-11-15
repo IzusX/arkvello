@@ -12,7 +12,11 @@ if [[ ! -d "$SEVENZIP_DIR/CPP/7zip/Bundles/Alone2" ]]; then
   exit 1
 fi
 
-ARCH="$(uname -m)"
+source "$ROOT_DIR/Scripts/build-architectures.sh"
+mkdir -p "$OUT_LIB_DIR"
+LIB_SLICES=()
+for ARCH in "${BUILD_ARCHS[@]}"; do
+OUT_DYLIB="$OUT_LIB_DIR/libsevenzip_$ARCH.dylib"
 if [[ "$ARCH" == "arm64" ]]; then
   MAK_FILE="cmpl_mac_arm64.mak"
   OBJ_SUBDIR="m_arm64"
@@ -34,7 +38,9 @@ NCPU="$(sysctl -n hw.ncpu 2>/dev/null || echo 4)"
 echo "[1/3] Compiling 7-Zip 26.06 core & codecs ($ARCH)..."
 (
   cd "$BUNDLE_DIR"
-  make -j"$NCPU" -f "../../$MAK_FILE" >/dev/null
+  make -j"$NCPU" -f "../../$MAK_FILE" \
+    CC="$(xcrun --find clang)" CXX="$(xcrun --find clang++)" \
+    MY_ARCH="-arch $ARCH -mmacosx-version-min=14.0 -isysroot $(xcrun --sdk macosx --show-sdk-path)" >/dev/null
 )
 
 mkdir -p "$OUT_LIB_DIR"
@@ -92,4 +98,18 @@ clang++ $ARCH_FLAG -mmacosx-version-min=14.0 \
   -o "$OUT_DYLIB"
 
 rm -f "$BRIDGE_OBJ"
+LIB_SLICES+=("$OUT_DYLIB")
+done
+OUT_DYLIB="$OUT_LIB_DIR/libsevenzip.dylib"
+if [[ ${#LIB_SLICES[@]} -eq 1 ]]; then
+  cp "${LIB_SLICES[0]}" "$OUT_DYLIB"
+else
+  lipo -create "${LIB_SLICES[@]}" -output "$OUT_DYLIB"
+fi
+for REQUIRED_ARCH in "${BUILD_ARCHS[@]}"; do
+  case " $(lipo -archs "$OUT_DYLIB") " in
+    *" $REQUIRED_ARCH "*) ;;
+    *) echo "Missing $REQUIRED_ARCH slice in ""$OUT_DYLIB" >&2; exit 1 ;;
+  esac
+done
 echo "Built $OUT_DYLIB ($(du -h "$OUT_DYLIB" | awk '{print $1}'))"

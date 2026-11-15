@@ -57,6 +57,10 @@ public struct VirtualArchiveTree: Sendable {
     private let entries: [ArchiveEntry]
 
     public init(entries: [ArchiveEntry]) {
+        self.init(entries: entries, checkCancellation: {})
+    }
+
+    public init(entries: [ArchiveEntry], checkCancellation: () throws -> Void) rethrows {
         self.entries = entries
 
         var map: [String: MutableNode] = [
@@ -64,6 +68,7 @@ public struct VirtualArchiveTree: Sendable {
         ]
 
         for entry in entries {
+            try checkCancellation()
             let normalized = Self.normalize(entry.path)
             guard !normalized.isEmpty else { continue }
 
@@ -71,6 +76,7 @@ public struct VirtualArchiveTree: Sendable {
             var parentPath = ""
 
             for (idx, part) in components.enumerated() {
+                try checkCancellation()
                 let currentPath = parentPath.isEmpty ? part : "\(parentPath)/\(part)"
                 let isLast = (idx == components.count - 1)
 
@@ -120,6 +126,7 @@ public struct VirtualArchiveTree: Sendable {
         builtNodes.reserveCapacity(map.count)
 
         for (path, m) in map where !path.isEmpty {
+            try checkCancellation()
             builtNodes[path] = VirtualArchiveNode(
                 path: m.path,
                 name: m.name,
@@ -134,6 +141,7 @@ public struct VirtualArchiveTree: Sendable {
 
         var builtChildren: [String: [VirtualArchiveNode]] = [:]
         for (folderPath, m) in map where m.isDirectory {
+            try checkCancellation()
             var list: [VirtualArchiveNode] = m.children.compactMap { builtNodes[$0] }
             list.sort { lhs, rhs in
                 if lhs.isDirectory != rhs.isDirectory {
@@ -194,6 +202,27 @@ public struct VirtualArchiveTree: Sendable {
             return lhs.path.localizedStandardCompare(rhs.path) == .orderedAscending
         }
         return matches
+    }
+
+    /// Unsorted bounded traversal for UI search. The pane sorts only the visible
+    /// result set, and can stop indexing matches as soon as its limit is reached.
+    public func matchingNodes(under rootSubpath: String, query: String, includeDirectories: Bool,
+                              showHidden: Bool, limit: Int, checkCancellation: () throws -> Void) rethrows
+        -> (nodes: [VirtualArchiveNode], truncated: Bool) {
+        let root = Self.normalize(rootSubpath)
+        let prefix = root.isEmpty ? "" : root + "/"
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        var matches: [VirtualArchiveNode] = []
+        for node in nodesByPath.values {
+            try checkCancellation()
+            if !includeDirectories && node.isDirectory { continue }
+            if !prefix.isEmpty && !node.path.hasPrefix(prefix) { continue }
+            if !showHidden && node.path.split(separator: "/").contains(where: { $0.hasPrefix(".") || $0 == "__MACOSX" }) { continue }
+            if !needle.isEmpty && !node.path.lowercased().contains(needle) { continue }
+            if matches.count >= limit { return (matches, true) }
+            matches.append(node)
+        }
+        return (matches, false)
     }
 
     public func node(at path: String) -> VirtualArchiveNode? {

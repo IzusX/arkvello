@@ -15,12 +15,14 @@ public final class TempEditSession: @unchecked Sendable {
     private var directoryWatcher: DispatchSourceFileSystemObject?
     private var watchedDirectoryFD: Int32 = -1
     private var debounceWorkItem: DispatchWorkItem?
-    private let watcherQueue = DispatchQueue(label: "com.sevenzipmac.tempedit.watcher")
+    private let watcherQueue = DispatchQueue(label: "io.github.izusx.arkvello.tempedit.watcher")
 
     public init(
         archive: OpenArchive,
         entry: ArchiveEntry,
         password: String? = nil,
+        allowUpdates: Bool = true,
+        progress: ((ArchiveProgress) -> Bool)? = nil,
         onExternalModification: (@Sendable () -> Void)? = nil
     ) throws {
         guard !entry.isDirectory else {
@@ -29,12 +31,14 @@ public final class TempEditSession: @unchecked Sendable {
 
         self.archiveURL = archive.url
         self.archiveEntryPath = VirtualArchiveTree.normalize(entry.path)
-        self.isArchiveUpdatable = archive.summary.isUpdatable
+        self.isArchiveUpdatable = archive.summary.isUpdatable && allowUpdates
 
         let rootTemp = FileManager.default.temporaryDirectory
-            .appendingPathComponent("SevenZipMac-Edit-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("Arkvello-Edit-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: rootTemp, withIntermediateDirectories: true)
         self.sessionDirectory = rootTemp
+        var completed = false
+        defer { if !completed { try? FileManager.default.removeItem(at: rootTemp) } }
 
         try archive.extract(
             indices: [entry.index],
@@ -42,7 +46,8 @@ public final class TempEditSession: @unchecked Sendable {
             stripPrefix: nil,
             fullPaths: true,
             overwrite: .overwriteAll,
-            password: password
+            password: password,
+            progress: progress
         )
 
         let targetURL = rootTemp.appendingPathComponent(self.archiveEntryPath)
@@ -51,10 +56,12 @@ public final class TempEditSession: @unchecked Sendable {
         }
         self.extractedFileURL = targetURL
         self.baselineDigest = try Self.hashFile(at: targetURL)
+        if progress?(ArchiveProgress(completedBytes: 0, totalBytes: 0)) == false { throw ArchiveError.cancelled }
 
         if let onExternalModification {
             startWatchingParentDirectory(onExternalModification: onExternalModification)
         }
+        completed = true
     }
 
     deinit {
@@ -87,16 +94,26 @@ public final class TempEditSession: @unchecked Sendable {
             throw ArchiveError.ioError("Временный файл был удалён")
         }
 
+        // Editors may save again while compression runs. Archive an immutable copy
+        // and use its digest as the baseline so a newer edit remains pending.
+        let snapshotRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Arkvello-EditCommit-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: snapshotRoot) }
+        let snapshotFile = snapshotRoot.appendingPathComponent(archiveEntryPath)
+        try FileManager.default.createDirectory(at: snapshotFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: extractedFileURL, to: snapshotFile)
+        let updatedDigest = try Self.hashFile(at: snapshotFile)
+        if progress?(ArchiveProgress(completedBytes: 0, totalBytes: 0)) == false { throw ArchiveError.cancelled }
+
         try SevenZipEngine.createOrUpdateArchive(
             at: archiveURL,
             inputPaths: [archiveEntryPath],
-            baseDirectory: sessionDirectory,
+            baseDirectory: snapshotRoot,
             options: options,
             password: password,
             progress: progress
         )
 
-        let updatedDigest = try Self.hashFile(at: extractedFileURL)
         lock.lock()
         baselineDigest = updatedDigest
         lock.unlock()

@@ -15,13 +15,13 @@ let sharedLinkerSettings: [LinkerSetting] = [
 ]
 
 let package = Package(
-    name: "SevenZipMac",
+    name: "Arkvello",
     platforms: [
         .macOS(.v14)
     ],
     products: [
         .library(name: "ArchiveCore", targets: ["ArchiveCore"]),
-        .executable(name: "SevenZipMac", targets: ["SevenZipMac"])
+        .executable(name: "Arkvello", targets: ["Arkvello"])
     ],
     targets: [
         .target(
@@ -36,10 +36,17 @@ let package = Package(
             path: "Sources/ArchiveCore"
         ),
         .executableTarget(
-            name: "SevenZipMac",
+            name: "Arkvello",
             dependencies: ["ArchiveCore"],
-            path: "Sources/SevenZipMac"
+            path: "Sources/Arkvello"
         ),
+        .target(name: "ArchivePreview", dependencies: ["CSevenZip"],
+                path: "Extensions/ArkvelloQuickLook",
+                exclude: ["PreviewProvider.swift", "Info.plist", "ArkvelloQuickLook.entitlements"],
+                sources: ["ArchiveListing.swift"]),
+        .testTarget(name: "ArchivePreviewTests", dependencies: ["ArchivePreview", "ArchiveCore"],
+                    path: "Tests/ArchivePreviewTests"),
+        .testTarget(name: "ArkvelloTests", dependencies: ["Arkvello"], path: "Tests/ArkvelloTests"),
         .testTarget(
             name: "ArchiveCoreTests",
             dependencies: ["ArchiveCore"],
