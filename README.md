@@ -1,105 +1,107 @@
 # Arkvello
 
+**English** | [Русский](README.ru.md)
+
 [![CI](https://github.com/IzusX/arkvello/actions/workflows/ci.yml/badge.svg)](https://github.com/IzusX/arkvello/actions/workflows/ci.yml)
 
-Нативный файловый менеджер-архиватор для macOS с независимым интерфейсом на `SwiftUI` + `AppKit NSTableView` и встроенным движком **7-Zip 26.06** (`libsevenzip.dylib`). Репозиторий проекта: [IzusX/arkvello](https://github.com/IzusX/arkvello).
+A native macOS file and archive manager with its own `SwiftUI` + `AppKit NSTableView` interface and the embedded **7-Zip 26.06** engine (`libsevenzip.dylib`). Project repository: [IzusX/arkvello](https://github.com/IzusX/arkvello).
 
-Arkvello — самостоятельное приложение, не официальная версия 7-Zip для macOS. Проект не связан с Игорем Павловым или проектом 7-Zip и не одобрен ими. Официальный сайт 7-Zip: [www.7-zip.org](https://www.7-zip.org/).
+Arkvello is an independent application, not an official version of 7-Zip for macOS. It is not affiliated with or endorsed by Igor Pavlov or the 7-Zip project. Official 7-Zip website: [www.7-zip.org](https://www.7-zip.org/).
 
-## Возможности
-- **Бесшовная навигация «диск ↔ архив ↔ вложенный архив»**: папки macOS и содержимое архивов открываются в единой панели без принудительной распаковки; `Enter` входит внутрь архива, `Backspace` / `⌘↑` / `..` возвращает на уровень выше.
-- **1 или 2 панели (`F9`)**: чистый однопанельный вид при открытии архива из Finder и двухпанельный режим с операциями `F5 Копировать` / `F6 Переместить` между папками и архивами (`Tab` переключает активную панель).
-- **Быстрый просмотр и редактирование на лету**:
-  - `Пробел` открывает системный `Quick Look` (`QLPreviewPanel`) для файлов внутри архива.
-  - Двойной клик / `Enter` открывает файл во внешней программе и при сохранении правок предлагает обновить его внутри архива (`7z`, `zip`, `tar`, `wim`).
-- **Drag-and-Drop с Finder**: перетаскивание файлов из окна архива напрямую в Finder (`NSFilePromiseProvider`) и перетаскивание файлов из Finder в архив.
-- **Полный движок 7-Zip 26.06 внутри процесса**: чтение 70+ форматов (`7z`, `zip`, `rar`/`rar5`, `tar`, `gz`, `bz2`, `xz`, `zstd`, `dmg`, `iso`, `apfs`, `cab`, `wim`, `.001` и др.), создание и обновление `7z`/`zip`/`tar`/`wim`, шифрование AES-256 и имён файлов (`-mhe=on`), пароли передаются строго внутри процесса без утечки в аргументы CLI.
+## Features
 
-Вложенные архивы доступны для просмотра и извлечения. Для изменения сначала извлеките вложенный архив на диск: автоматическая запись изменений через цепочку внешних архивов пока не поддерживается.
+- **Seamless navigation between disk folders, archives, and nested archives**: browse folders and archive contents in the same pane without extracting the entire archive first. `Enter` opens an archive; `Backspace` / `⌘↑` / `..` goes up one level.
+- **One or two panes (`F9`)**: a single-pane view when opening an archive from Finder, or a two-pane layout with `F5 Copy` / `F6 Move` between folders and archives. `Tab` switches the active pane.
+- **Quick previews and editing**:
+  - `Space` opens system `Quick Look` (`QLPreviewPanel`) for files inside archives.
+  - Double-click / `Enter` opens a file in an external application. After saving changes, Arkvello offers to update it inside the archive (`7z`, `zip`, `tar`, `wim`).
+- **Drag and drop with Finder**: drag files from an archive into Finder using `NSFilePromiseProvider`, or from Finder into an archive.
+- **The full 7-Zip 26.06 engine runs in process**: read 70+ formats (`7z`, `zip`, `rar`/`rar5`, `tar`, `gz`, `bz2`, `xz`, `zstd`, `dmg`, `iso`, `apfs`, `cab`, `wim`, `.001`, and more); create and update `7z`/`zip`/`tar`/`wim`; use AES-256 and filename encryption (`-mhe=on`). Passwords stay in process and are not exposed in command-line arguments.
 
-Открытие папок и архивов, построение дерева и извлечение вложенного архива выполняются в фоне. Панель показывает загрузку и кнопку отмены; результаты оставленной папки или вкладки не подменяют текущий список. Отмена движка кооперативная: отдельный системный вызов или обработчик формата может завершиться позже, при этом его результат уже не применяется.
+Nested archives can be browsed and extracted. To modify one, extract it to disk first: automatically writing changes back through a chain of enclosing archives is not supported yet.
 
+Folder and archive loading, tree construction, and nested archive extraction run in the background. The pane displays loading progress and a cancel button; results from a folder or tab you have left do not replace the current list. Engine cancellation is cooperative: an individual system call or format handler may finish later, but its result is no longer applied.
 
-Поиск запускается после паузы ввода 250 мс. Фильтрация, подготовка строк и сортировка выполняются в фоне; обычный список папки не ограничивается по числу строк. Рекурсивный поиск и плоский вид показывают до 8000 совпадений с явной отметкой об ограничении. Это выборка обхода, отсортированная для показа, а не первые 8000 элементов глобально отсортированного дерева; для более точного результата уточните запрос.
+Search starts after a 250 ms typing pause. Filtering, row preparation, and sorting run in the background; regular folder listings have no row limit. Recursive search and flat view display up to 8,000 matches with an explicit truncation indicator. This is a traversal sample sorted for display, rather than the first 8,000 entries of a globally sorted tree; narrow the query for more precise results.
 
-Операции создания, изменения и извлечения архивов, копирования, перемещения и подготовки предпросмотра выполняются по одной. Пока операция завершается или отменяется, повторная команда не запускает конкурирующую запись. Обновления прогресса объединяются, запросы пароля от панелей и операций показываются последовательно, ожидание ответа о перезаписи прерывается отменой. Копирование на диск сначала готовит полный файл или папку и затем заменяет назначение; ошибка подготовки сохраняет существующий объект. Отмена не откатывает уже завершённые элементы пакетной операции, а отдельный системный вызов копирования может закончиться позже.
+Archive creation, modification and extraction, copying, moving, and preview preparation run one operation at a time. Repeating a command while an operation finishes or cancels does not start a competing write. Progress updates are coalesced, password prompts from panes and operations are shown sequentially, and cancelling releases a pending overwrite decision. Disk copies stage a complete file or folder before replacing the destination; a preparation failure preserves the existing item. Cancellation does not roll back completed items in a batch, and an individual system copy call may finish later.
 
-## Дополнительные функции
+## Additional features
 
-- Вкладки панелей (`⌘T`, `⌘W`) и восстановление открытых папок/архивов при следующем запуске.
-- Плоский вид и поиск по вложенным папкам архива; ручной выбор кодировки ZIP (UTF-8, CP866, Windows-1251, KOI8-R, CP437, Windows-1252). Автоопределение старых кодировок — эвристическое; для неоднозначных имён используйте ручной выбор.
-- Копирование/вставка файлов через системный буфер (`⌘C` / `⌘V`). Для копирования из архива файлы предварительно извлекаются во временную папку.
-- Умное извлечение без дублирования корневой папки, сравнение существующего и нового файла при конфликте.
-- Контрольные суммы файла на диске и внутри архива с копированием и сравнением ожидаемого хеша.
-- Исключение служебных файлов macOS или сохранение расширенных атрибутов через AppleDouble. Пароли можно сохранять в Связке ключей macOS; Touch ID отдельно не реализован.
+- Pane tabs (`⌘T`, `⌘W`) and restoration of open folders and archives on the next launch.
+- Flat view and search through archive subfolders; manual ZIP encoding selection (UTF-8, CP866, Windows-1251, KOI8-R, CP437, Windows-1252). Legacy encoding detection is heuristic; select the encoding manually for ambiguous filenames.
+- Copy and paste through the system clipboard (`⌘C` / `⌘V`). Files copied from an archive are first extracted to a temporary folder.
+- Smart extraction that avoids duplicate root folders, with a comparison of existing and incoming files when a conflict occurs.
+- Checksums for files on disk and inside archives, with copying and comparison against an expected hash.
+- Exclusion of macOS housekeeping files or preservation of extended attributes through AppleDouble. Passwords can be saved in macOS Keychain; separate Touch ID support is not implemented.
 
-## Интеграция с Finder
+## Finder integration
 
-В `Настройки` (`⌘,`) можно установить приложение в `/Applications` и выбрать форматы, которые оно будет открывать по умолчанию. По умолчанию системные ассоциации не изменяются.
+In Settings (`⌘,`), you can install the app in `/Applications` and choose the formats it opens by default. System file associations are not changed automatically.
 
-Приложение включает пять служб Finder: «Извлечь сюда», «Извлечь в подпапку», «Добавить в 7z», «Добавить к архиву…», «Проверить архив». Их расположение и включение зависят от настроек macOS (меню «Службы» / «Быстрые действия»).
+The app provides five Finder services: Extract Here, Extract to Subfolder, Add to 7z, Add to Archive…, and Test Archive. Their location and availability depend on macOS settings (Services / Quick Actions).
 
-В бандл включено `ArkvelloQuickLook.appex` для просмотра списка файлов архива по пробелу в Finder. Для архивов с зашифрованными именами расширение показывает уведомление, не запрашивая пароль. Расширение подписано ad-hoc: успешная сборка не гарантирует его активацию системой. При необходимости проверьте раздел расширений Quick Look в Системных настройках. Приложение не имеет Developer ID и нотариализации Apple.
+The bundle includes `ArkvelloQuickLook.appex` to preview an archive's file listing with `Space` in Finder. For archives with encrypted filenames, the extension displays a notice without requesting a password. The extension is ad-hoc signed: a successful build does not guarantee that macOS has activated it. Check the Quick Look extensions section in System Settings if needed. The app has no Developer ID signature or Apple notarization.
 
-`⌘T` открывает вкладку; проверка целостности — `⇧⌘T`.
+`⌘T` opens a tab; `⇧⌘T` tests archive integrity.
 
-## Установка из релиза
+## Install a release
 
-Откройте DMG из [GitHub Releases](https://github.com/IzusX/arkvello/releases),
-перетащите `Arkvello.app` в `Applications` и извлеките образ.
-Если macOS блокирует запуск, после первой попытки используйте
-«Системные настройки → Конфиденциальность и безопасность → Всё равно открыть»,
-если доверяете этому релизу. См. [инструкцию Apple](https://support.apple.com/en-us/102445).
+Open the DMG from [GitHub Releases](https://github.com/IzusX/arkvello/releases),
+drag `Arkvello.app` into `Applications`, and eject the image.
+If macOS blocks launch, try opening the app once, then use
+System Settings → Privacy & Security → Open Anyway if you trust the release.
+See [Apple's instructions](https://support.apple.com/en-us/102445).
 
-Установка через [Homebrew tap IzusX](https://github.com/IzusX/homebrew-tap):
+Install through the [IzusX Homebrew tap](https://github.com/IzusX/homebrew-tap):
 
 ```bash
 brew install --cask IzusX/tap/arkvello
 ```
 
-Tap получает новые версии из опубликованных релизов ежедневно; после выпуска его workflow можно запустить вручную.
-Окно «О программе Arkvello → Лицензии…» открывает комплект лицензий в приложении.
+The tap checks published releases daily; its workflow can also be started manually after a release.
+About Arkvello → Licenses… opens the license files bundled with the app.
 
-## Сборка и запуск
+## Build and run
 
 ```bash
-# 1. Собрать динамическую библиотеку движка 7-Zip 26.06 (Vendor/lib/libsevenzip.dylib)
+# 1. Build the 7-Zip 26.06 engine library (Vendor/lib/libsevenzip.dylib)
 bash Scripts/build-7zip.sh
 
-# 2. Запустить тесты ядра, приложения и рендера Quick Look
+# 2. Run core, application, and Quick Look renderer tests
 swift test
 
-# 3. Собрать готовое приложение dist/Arkvello.app
+# 3. Build the app in dist/Arkvello.app
 bash Scripts/build-app.sh
 open "dist/Arkvello.app"
 ```
 
-Модуль и исполняемый файл приложения называются `Arkvello`, расширение — `ArkvelloQuickLook`, идентификатор приложения — `io.github.izusx.arkvello`. Имена движка остаются прежними: `Vendor/7zip`, `Scripts/build-7zip.sh` и `libsevenzip.dylib`.
+The application module and executable are named `Arkvello`, the extension is `ArkvelloQuickLook`, and the application identifier is `io.github.izusx.arkvello`. The engine retains the names `Vendor/7zip`, `Scripts/build-7zip.sh`, and `libsevenzip.dylib`.
 
-## Universal-сборка и релизы
+## Universal builds and releases
 
-Для Apple Silicon и Intel используется один бандл (macOS 14+):
+One bundle supports Apple Silicon and Intel (macOS 14+):
 
 ```bash
 ARCHS='arm64 x86_64' APP_VERSION=0.1.0 BUILD_NUMBER=1 bash Scripts/build-app.sh
 APP_VERSION=0.1.0 bash Scripts/build-dmg.sh
 ```
 
-Результат упаковки: `dist/Arkvello.app`, `dist/Arkvello-0.1.0-universal.dmg` и `dist/SHA256SUMS`. Для публичного релиза рядом с DMG обязателен соответствующий архив исходников `Arkvello-0.1.0-source.tar.gz`.
-Обе архитектуры включены в приложение, движок и Quick Look. Для быстрой локальной сборки без `ARCHS` используется архитектура текущего Mac. Наличие обеих архитектур не заменяет проверку запуска на Apple Silicon и Intel.
+Packaging produces `dist/Arkvello.app`, `dist/Arkvello-0.1.0-universal.dmg`, and `dist/SHA256SUMS`. Every public release must include the corresponding source archive, `Arkvello-0.1.0-source.tar.gz`, alongside the DMG.
+Both architectures are included in the app, engine, and Quick Look extension. For a quick local build, omitting `ARCHS` uses the current Mac's architecture. Including both architectures does not replace runtime testing on Apple Silicon and Intel.
 
-GitHub Actions проверяет каждый push и pull request: тесты и сборка приложения с Quick Look на Apple Silicon и Intel с macOS 15 / Xcode 16.4. По тегу `vX.Y.Z` после этих проверок собираются и публикуются Universal DMG, полный архив исходников, контрольные суммы и Homebrew Cask `arkvello` с реальным SHA-256. Отдельный tap проверяет релизные файлы и обновляет cask своим workflow без персонального токена.
+GitHub Actions checks every branch push and pull request: tests and app/Quick Look builds on Apple Silicon and Intel with macOS 15 / Xcode 16.4. Pushing a `vX.Y.Z` tag runs these checks, then builds and publishes a Universal DMG, the complete source archive, checksums, and the `arkvello` Homebrew cask with the actual SHA-256. The separate tap verifies release assets and updates its cask through its own workflow without a personal access token.
 
-Сборки имеют ad-hoc подпись, без Developer ID и нотариализации. Если macOS блокирует скачанное приложение, после попытки запуска используйте «Системные настройки → Конфиденциальность и безопасность → Всё равно открыть». Глобальное отключение Gatekeeper не требуется.
+Builds are ad-hoc signed, without Developer ID or notarization. If macOS blocks a downloaded app, try opening it once, then use System Settings → Privacy & Security → Open Anyway. There is no need to disable Gatekeeper globally.
 
-Подробности сборки, настройки tap, выпуска и замены библиотеки движка: [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md).
+Build, tap, release, and engine library replacement instructions: [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md).
 
-Организация кода приложения: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Результаты локальных проверок и оставшиеся проверки перед релизом: [docs/VALIDATION.md](docs/VALIDATION.md).
+Application structure: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Local validation results and remaining manual release checks (in Russian): [docs/VALIDATION.md](docs/VALIDATION.md).
 
-## Лицензии
+## Licenses
 
-Оригинальный код приложения Arkvello, документация и скрипты сборки распространяются под [MIT License](LICENSE), Copyright (c) 2026 IzusX, с указанными в ней исключениями. `Vendor/7zip`, сторонние материалы и код `Bridge`, компилируемый в движок, не покрываются этим разрешением MIT. Код моста в составе `libsevenzip.dylib` распространяется под LGPL-2.1-or-later.
+Original Arkvello application code, documentation, and build scripts are distributed under the [MIT License](LICENSE), Copyright (c) 2026 IzusX, with the exclusions stated there. This MIT permission does not cover `Vendor/7zip`, third-party materials, or the `Bridge` code compiled into the engine. The bridge code in `libsevenzip.dylib` is LGPL-2.1-or-later.
 
-Движок `libsevenzip.dylib` собирается из исходников 7-Zip 26.06 и моста: применяются GNU LGPL v2.1+, BSD 3-Clause, BSD 2-Clause, указанные upstream файлы public domain и ограничение unRAR. Исходники unRAR нельзя использовать для воссоздания алгоритма сжатия RAR или разработки RAR (WinRAR)-совместимого архиватора. Arkvello поддерживает распаковку RAR, не создание RAR.
+The `libsevenzip.dylib` engine is built from 7-Zip 26.06 sources and the bridge. GNU LGPL v2.1+, BSD 3-Clause, BSD 2-Clause, upstream public-domain designations, and the unRAR restriction apply. The unRAR sources cannot be used to recreate the RAR compression algorithm or develop a RAR (WinRAR)-compatible archiver. Arkvello supports RAR extraction, not RAR creation.
 
-**Весь бандл не лицензируется только под MIT.** Полные сторонние уведомления и лицензии, сведения об исходниках и замене динамической библиотеки: [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) и [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md). Исходные тексты лицензий сохранены в `Vendor/7zip/DOC/License.txt`, `copying.txt` и `unRarLicense.txt`.
+**The complete bundle is not solely MIT-licensed.** Full third-party notices and licenses, source availability, and dynamic library replacement instructions: [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) and [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md). Upstream license texts are preserved in `Vendor/7zip/DOC/License.txt`, `copying.txt`, and `unRarLicense.txt`.
