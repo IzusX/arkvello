@@ -22,9 +22,35 @@ enum SortField: String, CaseIterable, Sendable {
     case method
 }
 
+struct PaneTabItem: Identifiable, Equatable {
+    let id: UUID
+    var location: NavigationLocation
+    var backStack: [NavigationLocation]
+    var forwardStack: [NavigationLocation]
+
+    var title: String {
+        switch location {
+        case .diskFolder(let url):
+            let name = url.lastPathComponent
+            return (name.isEmpty || name == "/") ? "Macintosh HD" : name
+        case .archive(_, let layers, let subpath):
+            let cleanSub = VirtualArchiveTree.normalize(subpath)
+            if !cleanSub.isEmpty, let leaf = cleanSub.split(separator: "/").last {
+                return String(leaf)
+            }
+            return layers.last?.displayName ?? "Архив"
+        }
+    }
+
+    var isArchiveTab: Bool {
+        location.isInsideArchive
+    }
+}
+
 struct DiskEntryInfo: Equatable, Hashable, Sendable {
     let url: URL
     let name: String
+    let relativeDisplayPath: String?
     let isDirectory: Bool
     let isSymlink: Bool
     let isArchiveContainer: Bool
@@ -54,6 +80,22 @@ enum PaneRowItem: Identifiable, Equatable {
         case .parentDirectory: return ".."
         case .disk(let d): return d.name
         case .archive(let a): return a.name
+        }
+    }
+
+    func displayLabel(showRelativePath: Bool, stripPrefix: String = "") -> String {
+        guard showRelativePath, !isParentRow else { return name }
+        switch self {
+        case .parentDirectory:
+            return ".."
+        case .disk(let d):
+            return d.relativeDisplayPath ?? d.name
+        case .archive(let a):
+            let cleanStrip = VirtualArchiveTree.normalize(stripPrefix)
+            if !cleanStrip.isEmpty && a.path.hasPrefix(cleanStrip + "/") {
+                return String(a.path.dropFirst(cleanStrip.count + 1))
+            }
+            return a.path
         }
     }
 

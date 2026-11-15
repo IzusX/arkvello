@@ -4,13 +4,16 @@ import Foundation
 private final class CallbackContext {
     let progressHandler: ((ArchiveProgress) -> Bool)?
     let passwordProvider: (() -> String?)?
+    let overwriteHandler: ((OverwriteConflict) -> OverwriteDecision)?
 
     init(
         progressHandler: ((ArchiveProgress) -> Bool)? = nil,
-        passwordProvider: (() -> String?)? = nil
+        passwordProvider: (() -> String?)? = nil,
+        overwriteHandler: ((OverwriteConflict) -> OverwriteDecision)? = nil
     ) {
         self.progressHandler = progressHandler
         self.passwordProvider = passwordProvider
+        self.overwriteHandler = overwriteHandler
     }
 }
 
@@ -27,6 +30,23 @@ private let cPasswordBridge: sz_password_cb = { userData in
     let ctx = Unmanaged<CallbackContext>.fromOpaque(userData).takeUnretainedValue()
     guard let pwd = ctx.passwordProvider?(), !pwd.isEmpty else { return nil }
     return strdup(pwd)
+}
+
+private let cOverwriteBridge: sz_overwrite_cb = { promptPtr, userData in
+    guard let promptPtr, let userData else { return SZ_OW_ANSWER_YES_TO_ALL }
+    let ctx = Unmanaged<CallbackContext>.fromOpaque(userData).takeUnretainedValue()
+    guard let handler = ctx.overwriteHandler else { return SZ_OW_ANSWER_YES_TO_ALL }
+
+    let p = promptPtr.pointee
+    let conflict = OverwriteConflict(
+        existingPath: p.existing_path.map { String(cString: $0) } ?? "",
+        existingSize: p.has_existing_size ? p.existing_size : nil,
+        existingModifiedDate: p.has_existing_mtime ? Date(timeIntervalSince1970: TimeInterval(p.existing_mtime_sec)) : nil,
+        newPath: p.new_path.map { String(cString: $0) } ?? "",
+        newSize: p.has_new_size ? p.new_size : nil,
+        newModifiedDate: p.has_new_mtime ? Date(timeIntervalSince1970: TimeInterval(p.new_mtime_sec)) : nil
+    )
+    return handler(conflict).cValue
 }
 
 public enum SevenZipEngine {
@@ -67,7 +87,6 @@ public enum SevenZipEngine {
         }
     }
 
-    /// Extensions appropriate for opening as an archive container on double-click in the file manager.
     public static let browsableArchiveExtensions: Set<String> = [
         "7z", "zip", "zipx", "rar", "tar", "tgz", "tbz", "tbz2", "txz", "tzst", "tlz",
         "gz", "gzip", "bz2", "bzip2", "xz", "lzma", "zst", "zstd", "cab", "iso", "dmg",
@@ -97,13 +116,35 @@ public enum SevenZipEngine {
             throw ArchiveError.invalidArgument("Список входных файлов пуст")
         }
 
+        var actualInputs = inputPaths
+        var actualBaseDir = baseDirectory
+        var effectiveOptions = options
+        var xattrStagingToClean: URL?
+
+        if options.preserveMacExtendedAttributes {
+            let staged = try MacMetadataPreserver.prepareStagingWithAppleDouble(
+                inputPaths: inputPaths,
+                baseDirectory: baseDirectory
+            )
+            xattrStagingToClean = staged.stagingRoot
+            actualBaseDir = staged.stagingRoot
+            actualInputs = staged.relativeInputPaths
+            // Keep synthesized `._*` sidecars while still excluding `.DS_Store` if needed
+            effectiveOptions.excludeMacOSMetadata = false
+        }
+        defer {
+            if let stage = xattrStagingToClean {
+                try? FileManager.default.removeItem(at: stage)
+            }
+        }
+
         let ctx = CallbackContext(progressHandler: progress)
         let userData = Unmanaged.passUnretained(ctx).toOpaque()
         var errPtr: UnsafeMutablePointer<CChar>?
 
-        let status: sz_status_t = withCStrings(inputPaths) { cInputArray in
-            let formatC = options.format.flatMap { $0.isEmpty ? nil : strdup($0) }
-            let methodC = options.method.flatMap { $0.isEmpty ? nil : strdup($0) }
+        let status: sz_status_t = withCStrings(actualInputs) { cInputArray in
+            let formatC = effectiveOptions.format.flatMap { $0.isEmpty ? nil : strdup($0) }
+            let methodC = effectiveOptions.method.flatMap { $0.isEmpty ? nil : strdup($0) }
             defer {
                 if let formatC { free(formatC) }
                 if let methodC { free(methodC) }
@@ -112,69 +153,26 @@ public enum SevenZipEngine {
             var cOpts = sz_update_options_t(
                 format_name: formatC,
                 method: methodC,
-                compression_level: Int32(options.level),
-                dictionary_size_kb: options.dictionarySizeKB,
-                num_threads: Int32(options.threads),
-                solid_block_bytes: options.solidBlockBytes,
-                volume_bytes: options.splitVolumeBytes,
-                encrypt_headers: options.encryptHeaders,
-                store_symlinks: options.storeSymlinks
+                compression_level: Int32(effectiveOptions.level),
+                dictionary_size_kb: effectiveOptions.dictionarySizeKB,
+                num_threads: Int32(effectiveOptions.threads),
+                solid_block_bytes: effectiveOptions.solidBlockBytes,
+                volume_bytes: effectiveOptions.splitVolumeBytes,
+                encrypt_headers: effectiveOptions.encryptHeaders,
+                store_symlinks: effectiveOptions.storeSymlinks,
+                exclude_macos_metadata: effectiveOptions.excludeMacOSMetadata
             )
 
             return archiveURL.path.withCString { arcPathC in
-                if let basePath = baseDirectory?.path {
-                    return basePath.withCString { baseC in
-                        if let password, !password.isEmpty {
-                            return password.withCString { pwdC in
-                                sz_archive_update(
-                                    arcPathC,
-                                    cInputArray,
-                                    UInt32(inputPaths.count),
-                                    baseC,
-                                    &cOpts,
-                                    pwdC,
-                                    progress == nil ? nil : cProgressBridge,
-                                    userData,
-                                    &errPtr
-                                )
-                            }
-                        } else {
-                            return sz_archive_update(
-                                arcPathC,
-                                cInputArray,
-                                UInt32(inputPaths.count),
-                                baseC,
-                                &cOpts,
-                                nil,
-                                progress == nil ? nil : cProgressBridge,
-                                userData,
-                                &errPtr
-                            )
-                        }
-                    }
-                } else {
-                    if let password, !password.isEmpty {
-                        return password.withCString { pwdC in
-                            sz_archive_update(
-                                arcPathC,
-                                cInputArray,
-                                UInt32(inputPaths.count),
-                                nil,
-                                &cOpts,
-                                pwdC,
-                                progress == nil ? nil : cProgressBridge,
-                                userData,
-                                &errPtr
-                            )
-                        }
-                    } else {
-                        return sz_archive_update(
+                withOptionalCString(actualBaseDir?.path) { baseC in
+                    withOptionalCString(password?.isEmpty == false ? password : nil) { pwdC in
+                        sz_archive_update(
                             arcPathC,
                             cInputArray,
-                            UInt32(inputPaths.count),
-                            nil,
+                            UInt32(actualInputs.count),
+                            baseC,
                             &cOpts,
-                            nil,
+                            pwdC,
                             progress == nil ? nil : cProgressBridge,
                             userData,
                             &errPtr
@@ -202,24 +200,12 @@ public enum SevenZipEngine {
 
         let status = withCStrings(archivePaths) { cPaths in
             archiveURL.path.withCString { arcC in
-                if let password, !password.isEmpty {
-                    return password.withCString { pwdC in
-                        sz_archive_delete_items(
-                            arcC,
-                            cPaths,
-                            UInt32(archivePaths.count),
-                            pwdC,
-                            progress == nil ? nil : cProgressBridge,
-                            userData,
-                            &errPtr
-                        )
-                    }
-                } else {
-                    return sz_archive_delete_items(
+                withOptionalCString(password?.isEmpty == false ? password : nil) { pwdC in
+                    sz_archive_delete_items(
                         arcC,
                         cPaths,
                         UInt32(archivePaths.count),
-                        nil,
+                        pwdC,
                         progress == nil ? nil : cProgressBridge,
                         userData,
                         &errPtr
@@ -250,26 +236,13 @@ public enum SevenZipEngine {
         let status = withCStrings(oldPaths) { cOld in
             withCStrings(newPaths) { cNew in
                 archiveURL.path.withCString { arcC in
-                    if let password, !password.isEmpty {
-                        return password.withCString { pwdC in
-                            sz_archive_rename_items(
-                                arcC,
-                                cOld,
-                                cNew,
-                                UInt32(pairs.count),
-                                pwdC,
-                                progress == nil ? nil : cProgressBridge,
-                                userData,
-                                &errPtr
-                            )
-                        }
-                    } else {
-                        return sz_archive_rename_items(
+                    withOptionalCString(password?.isEmpty == false ? password : nil) { pwdC in
+                        sz_archive_rename_items(
                             arcC,
                             cOld,
                             cNew,
                             UInt32(pairs.count),
-                            nil,
+                            pwdC,
                             progress == nil ? nil : cProgressBridge,
                             userData,
                             &errPtr
@@ -283,10 +256,58 @@ public enum SevenZipEngine {
             throw ArchiveError.from(status: status, errorPointer: errPtr)
         }
     }
+
+    public static func computeFileHashes(
+        at fileURL: URL,
+        progress: ((ArchiveProgress) -> Bool)? = nil
+    ) throws -> [ArchiveHashDigest] {
+        let ctx = CallbackContext(progressHandler: progress)
+        let userData = Unmanaged.passUnretained(ctx).toOpaque()
+        var rawDigests: UnsafeMutablePointer<sz_hash_digest_t>?
+        var count: UInt32 = 0
+        var errPtr: UnsafeMutablePointer<CChar>?
+
+        let status = fileURL.path.withCString { pathC in
+            sz_compute_file_hashes(
+                pathC,
+                progress == nil ? nil : cProgressBridge,
+                userData,
+                &rawDigests,
+                &count,
+                &errPtr
+            )
+        }
+
+        guard status == SZ_STATUS_OK else {
+            throw ArchiveError.from(status: status, errorPointer: errPtr)
+        }
+        defer {
+            if let rawDigests {
+                sz_free_hashes(rawDigests, count)
+            }
+        }
+
+        return decodeHashDigests(rawDigests, count: count)
+    }
+
+    fileprivate static func decodeHashDigests(
+        _ rawDigests: UnsafeMutablePointer<sz_hash_digest_t>?,
+        count: UInt32
+    ) -> [ArchiveHashDigest] {
+        guard let rawDigests, count > 0 else { return [] }
+        let buf = UnsafeBufferPointer(start: rawDigests, count: Int(count))
+        return buf.map { d in
+            ArchiveHashDigest(
+                algorithm: d.algorithm.map { String(cString: $0) } ?? "",
+                hex: d.hex.map { String(cString: $0) } ?? ""
+            )
+        }
+    }
 }
 
 public final class OpenArchive: @unchecked Sendable {
     public let url: URL
+    public let encoding: ArchiveNameEncoding
     public let summary: ArchiveSummary
     public let entries: [ArchiveEntry]
 
@@ -296,9 +317,11 @@ public final class OpenArchive: @unchecked Sendable {
     public init(
         url: URL,
         password: String? = nil,
+        encoding: ArchiveNameEncoding = .auto,
         passwordProvider: (() -> String?)? = nil
     ) throws {
         self.url = url
+        self.encoding = encoding
         let ctx = CallbackContext(passwordProvider: passwordProvider)
         let userData = Unmanaged.passUnretained(ctx).toOpaque()
 
@@ -306,21 +329,11 @@ public final class OpenArchive: @unchecked Sendable {
         var errPtr: UnsafeMutablePointer<CChar>?
 
         let openStatus: sz_status_t = url.path.withCString { pathC in
-            if let password, !password.isEmpty {
-                return password.withCString { pwdC in
-                    sz_archive_open(
-                        pathC,
-                        pwdC,
-                        passwordProvider == nil ? nil : cPasswordBridge,
-                        userData,
-                        &rawHandle,
-                        &errPtr
-                    )
-                }
-            } else {
-                return sz_archive_open(
+            withOptionalCString(password?.isEmpty == false ? password : nil) { pwdC in
+                sz_archive_open_with_options(
                     pathC,
-                    nil,
+                    pwdC,
+                    encoding.rawValue,
                     passwordProvider == nil ? nil : cPasswordBridge,
                     userData,
                     &rawHandle,
@@ -363,8 +376,10 @@ public final class OpenArchive: @unchecked Sendable {
         stripPrefix: String? = nil,
         fullPaths: Bool = true,
         overwrite: OverwriteMode = .overwriteAll,
+        restoreMacMetadata: Bool = true,
         password: String? = nil,
         passwordProvider: (() -> String?)? = nil,
+        overwriteHandler: ((OverwriteConflict) -> OverwriteDecision)? = nil,
         progress: ((ArchiveProgress) -> Bool)? = nil
     ) throws {
         lock.lock()
@@ -373,19 +388,51 @@ public final class OpenArchive: @unchecked Sendable {
             throw ArchiveError.invalidArgument("Архив уже закрыт")
         }
 
-        let ctx = CallbackContext(progressHandler: progress, passwordProvider: passwordProvider)
+        let ctx = CallbackContext(
+            progressHandler: progress,
+            passwordProvider: passwordProvider,
+            overwriteHandler: overwriteHandler
+        )
         let userData = Unmanaged.passUnretained(ctx).toOpaque()
         var errPtr: UnsafeMutablePointer<CChar>?
 
         let cleanStrip = stripPrefix?.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let stripToPass = (cleanStrip?.isEmpty == false) ? cleanStrip : nil
 
+        // Derive metadata candidates from selected archive entries, never from a destination scan.
+        // Ambiguous output mappings (unsafe paths, flattened collisions, rename-on-conflict)
+        // are intentionally not restored.
+        let selectedIndices = indices.flatMap { $0.isEmpty ? nil : Set($0) }
+        var outputCounts: [String: Int] = [:]
+        if restoreMacMetadata {
+            for entry in entries where selectedIndices == nil || selectedIndices!.contains(entry.index) {
+                guard !entry.isSymlink, var path = MacMetadataPreserver.safeRelativePath(entry.path) else { continue }
+                if let stripToPass {
+                    guard MacMetadataPreserver.safeRelativePath(stripToPass) != nil,
+                          path.hasPrefix(stripToPass + "/") else { continue }
+                    path.removeFirst(stripToPass.count + 1)
+                }
+                if !fullPaths {
+                    guard !entry.isDirectory else { continue }
+                    path = (path as NSString).lastPathComponent
+                }
+                outputCounts[path, default: 0] += 1
+            }
+        }
+        let metadataPlan = MacMetadataPreserver.prepareRestoration(
+            in: destinationDirectory,
+            relativePaths: outputCounts.filter { $0.value == 1 }.map(\.key)
+        )
+
         let status: sz_status_t = destinationDirectory.path.withCString { destC in
             withOptionalCString(stripToPass) { stripC in
                 withOptionalCString(password?.isEmpty == false ? password : nil) { pwdC in
+                    let owCb: sz_overwrite_cb? = (overwrite == .askInteractive && overwriteHandler != nil)
+                        ? cOverwriteBridge
+                        : nil
                     if let indices, !indices.isEmpty {
                         return indices.withUnsafeBufferPointer { idxBuf in
-                            sz_archive_extract(
+                            sz_archive_extract_ex(
                                 h,
                                 idxBuf.baseAddress,
                                 UInt32(idxBuf.count),
@@ -393,6 +440,7 @@ public final class OpenArchive: @unchecked Sendable {
                                 stripC,
                                 fullPaths,
                                 overwrite.cValue,
+                                owCb,
                                 pwdC,
                                 passwordProvider == nil ? nil : cPasswordBridge,
                                 progress == nil ? nil : cProgressBridge,
@@ -401,7 +449,7 @@ public final class OpenArchive: @unchecked Sendable {
                             )
                         }
                     } else {
-                        return sz_archive_extract(
+                        return sz_archive_extract_ex(
                             h,
                             nil,
                             0,
@@ -409,6 +457,7 @@ public final class OpenArchive: @unchecked Sendable {
                             stripC,
                             fullPaths,
                             overwrite.cValue,
+                            owCb,
                             pwdC,
                             passwordProvider == nil ? nil : cPasswordBridge,
                             progress == nil ? nil : cProgressBridge,
@@ -422,6 +471,10 @@ public final class OpenArchive: @unchecked Sendable {
 
         if status != SZ_STATUS_OK {
             throw ArchiveError.from(status: status, errorPointer: errPtr)
+        }
+
+        if restoreMacMetadata {
+            MacMetadataPreserver.restoreAppleDoubleMetadata(in: destinationDirectory, plan: metadataPlan)
         }
     }
 
@@ -511,6 +564,50 @@ public final class OpenArchive: @unchecked Sendable {
         }
         defer { sz_buffer_free(rawData) }
         return Data(bytes: rawData, count: rawSize)
+    }
+
+    public func computeEntryHashes(
+        for index: UInt32,
+        password: String? = nil,
+        passwordProvider: (() -> String?)? = nil,
+        progress: ((ArchiveProgress) -> Bool)? = nil
+    ) throws -> [ArchiveHashDigest] {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let h = handle else {
+            throw ArchiveError.invalidArgument("Архив уже закрыт")
+        }
+
+        let ctx = CallbackContext(progressHandler: progress, passwordProvider: passwordProvider)
+        let userData = Unmanaged.passUnretained(ctx).toOpaque()
+        var rawDigests: UnsafeMutablePointer<sz_hash_digest_t>?
+        var count: UInt32 = 0
+        var errPtr: UnsafeMutablePointer<CChar>?
+
+        let status: sz_status_t = withOptionalCString(password?.isEmpty == false ? password : nil) { pwdC in
+            sz_archive_compute_entry_hashes(
+                h,
+                index,
+                pwdC,
+                passwordProvider == nil ? nil : cPasswordBridge,
+                progress == nil ? nil : cProgressBridge,
+                userData,
+                &rawDigests,
+                &count,
+                &errPtr
+            )
+        }
+
+        guard status == SZ_STATUS_OK else {
+            throw ArchiveError.from(status: status, errorPointer: errPtr)
+        }
+        defer {
+            if let rawDigests {
+                sz_free_hashes(rawDigests, count)
+            }
+        }
+
+        return SevenZipEngine.decodeHashDigests(rawDigests, count: count)
     }
 
     private static func readSummary(handle: OpaquePointer) throws -> ArchiveSummary {

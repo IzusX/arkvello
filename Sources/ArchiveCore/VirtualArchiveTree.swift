@@ -12,6 +12,10 @@ public struct VirtualArchiveNode: Identifiable, Equatable, Sendable {
 
     public var id: String { path }
 
+    public var parentFolderPath: String {
+        VirtualArchiveTree.parentPath(of: path) ?? ""
+    }
+
     public var displaySize: UInt64? {
         if isDirectory {
             return aggregatedSize > 0 || itemCount > 0 ? aggregatedSize : entry?.size
@@ -147,6 +151,49 @@ public struct VirtualArchiveTree: Sendable {
     public func children(in folderPath: String) -> [VirtualArchiveNode] {
         let key = Self.normalize(folderPath)
         return childrenByFolder[key] ?? []
+    }
+
+    /// Returns all nodes under `rootSubpath` flattened across all nested subdirectories (7zFM Flat View).
+    public func flatNodes(under rootSubpath: String = "", includeDirectories: Bool = false) -> [VirtualArchiveNode] {
+        let cleanPrefix = Self.normalize(rootSubpath)
+        let prefixWithSlash = cleanPrefix.isEmpty ? "" : "\(cleanPrefix)/"
+
+        var list = nodesByPath.values.filter { node in
+            if !includeDirectories && node.isDirectory { return false }
+            if cleanPrefix.isEmpty { return true }
+            return node.path.hasPrefix(prefixWithSlash)
+        }
+        list.sort { lhs, rhs in
+            lhs.path.localizedStandardCompare(rhs.path) == .orderedAscending
+        }
+        return list
+    }
+
+    /// Deep recursive search across all nested folders under `rootSubpath`.
+    public func search(
+        query: String,
+        under rootSubpath: String = "",
+        includeDirectories: Bool = true
+    ) -> [VirtualArchiveNode] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !needle.isEmpty else { return [] }
+        let cleanPrefix = Self.normalize(rootSubpath)
+        let prefixWithSlash = cleanPrefix.isEmpty ? "" : "\(cleanPrefix)/"
+
+        var matches = nodesByPath.values.filter { node in
+            if !includeDirectories && node.isDirectory { return false }
+            if !cleanPrefix.isEmpty && !node.path.hasPrefix(prefixWithSlash) {
+                return false
+            }
+            return node.name.lowercased().contains(needle) || node.path.lowercased().contains(needle)
+        }
+        matches.sort { lhs, rhs in
+            if lhs.isDirectory != rhs.isDirectory {
+                return lhs.isDirectory && !rhs.isDirectory
+            }
+            return lhs.path.localizedStandardCompare(rhs.path) == .orderedAscending
+        }
+        return matches
     }
 
     public func node(at path: String) -> VirtualArchiveNode? {

@@ -6,8 +6,11 @@ import SwiftUI
 final class SevenZipAppDelegate: NSObject, NSApplicationDelegate {
     let appVM = AppViewModel()
     private var mainWindow: NSWindow?
+    private lazy var finderServicesHandler = FinderServicesHandler(appVM: appVM)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.servicesProvider = finderServicesHandler
+        NSUpdateDynamicServices()
         let contentView = MainWindowView(appVM: appVM)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1060, height: 660),
@@ -48,6 +51,26 @@ final class SevenZipAppDelegate: NSObject, NSApplicationDelegate {
         true
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        appVM.persistSessionState()
+    }
+
+    @objc func menuNewTab(_ sender: Any?) { appVM.openNewTabInActivePane() }
+    @objc func menuCloseTabOrWindow(_ sender: Any?) {
+        // Sheets own their cancellation so pending callbacks always receive a response.
+        guard mainWindow?.attachedSheet == nil else { return }
+        guard NSApp.keyWindow === mainWindow else {
+            NSApp.keyWindow?.performClose(sender)
+            return
+        }
+        if !appVM.closeActiveTabOrAllowWindowClose() {
+            mainWindow?.performClose(sender)
+        }
+    }
+    @objc func menuSettings(_ sender: Any?) { appVM.showSettingsSheet = true }
+    @objc func menuChecksums(_ sender: Any?) { appVM.computeChecksumsForSelection() }
+    @objc func menuFind(_ sender: Any?) { appVM.activePane.focusSearch(enableDeepSearch: true) }
+
     @objc func menuOpen(_ sender: Any?) { appVM.promptOpenArchiveDialog() }
     @objc func menuCompress(_ sender: Any?) { appVM.presentAddCompressDialog() }
     @objc func menuExtract(_ sender: Any?) { appVM.presentExtractDialog() }
@@ -87,6 +110,16 @@ private func buildMainMenu(delegate: SevenZipAppDelegate) -> NSMenu {
     aboutItem.target = delegate
     appMenu.addItem(aboutItem)
     appMenu.addItem(.separator())
+    let settingsItem = NSMenuItem(title: "Настройки…", action: #selector(SevenZipAppDelegate.menuSettings(_:)), keyEquivalent: ",")
+    settingsItem.target = delegate
+    appMenu.addItem(settingsItem)
+    appMenu.addItem(.separator())
+    let servicesItem = NSMenuItem(title: "Службы", action: nil, keyEquivalent: "")
+    let servicesMenu = NSMenu(title: "Службы")
+    servicesItem.submenu = servicesMenu
+    appMenu.addItem(servicesItem)
+    NSApp.servicesMenu = servicesMenu
+    appMenu.addItem(.separator())
     appMenu.addItem(withTitle: "Скрыть 7-Zip", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
     appMenu.addItem(.separator())
     appMenu.addItem(withTitle: "Завершить 7-Zip", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -109,7 +142,12 @@ private func buildMainMenu(delegate: SevenZipAppDelegate) -> NSMenu {
     extractItem.target = delegate
     fileMenu.addItem(extractItem)
 
+    let tabItem = NSMenuItem(title: "Новая вкладка", action: #selector(SevenZipAppDelegate.menuNewTab(_:)), keyEquivalent: "t")
+    tabItem.target = delegate
+    fileMenu.addItem(tabItem)
+
     let testItem = NSMenuItem(title: "Проверить целостность", action: #selector(SevenZipAppDelegate.menuTestArchive(_:)), keyEquivalent: "t")
+    testItem.keyEquivalentModifierMask = [.command, .shift]
     testItem.target = delegate
     fileMenu.addItem(testItem)
 
@@ -127,8 +165,14 @@ private func buildMainMenu(delegate: SevenZipAppDelegate) -> NSMenu {
     propsItem.target = delegate
     fileMenu.addItem(propsItem)
 
+    let checksumItem = NSMenuItem(title: "Контрольные суммы…", action: #selector(SevenZipAppDelegate.menuChecksums(_:)), keyEquivalent: "")
+    checksumItem.target = delegate
+    fileMenu.addItem(checksumItem)
+
     fileMenu.addItem(.separator())
-    fileMenu.addItem(withTitle: "Закрыть окно", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+    let closeItem = NSMenuItem(title: "Закрыть вкладку или окно", action: #selector(SevenZipAppDelegate.menuCloseTabOrWindow(_:)), keyEquivalent: "w")
+    closeItem.target = delegate
+    fileMenu.addItem(closeItem)
 
     // Edit menu (needed so Cmd+C / Cmd+V / Cmd+A work inside text fields & sheets!)
     let editMenuItem = NSMenuItem()
@@ -142,6 +186,10 @@ private func buildMainMenu(delegate: SevenZipAppDelegate) -> NSMenu {
     editMenu.addItem(withTitle: "Копировать", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
     editMenu.addItem(withTitle: "Вставить", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
     editMenu.addItem(withTitle: "Выбрать всё", action: #selector(NSStandardKeyBindingResponding.selectAll(_:)), keyEquivalent: "a")
+    editMenu.addItem(.separator())
+    let findItem = NSMenuItem(title: "Поиск…", action: #selector(SevenZipAppDelegate.menuFind(_:)), keyEquivalent: "f")
+    findItem.target = delegate
+    editMenu.addItem(findItem)
 
     // View menu
     let viewMenuItem = NSMenuItem()

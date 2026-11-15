@@ -14,7 +14,7 @@ struct PasswordPromptRequest: Identifiable {
     let id = UUID()
     let archiveURL: URL
     let isRetryAfterFailure: Bool
-    let completion: (String?) -> Void
+    let completion: (String?, Bool) -> Void
 }
 
 struct CompressSheetRequest: Identifiable {
@@ -51,6 +51,19 @@ struct PropertiesSheetRequest: Identifiable {
     let selectedRows: [PaneRowItem]
 }
 
+struct OverwriteConflictSheetRequest: Identifiable {
+    let id = UUID()
+    let conflict: OverwriteConflict
+    let respond: (OverwriteDecision) -> Void
+}
+
+struct ChecksumSheetRequest: Identifiable {
+    let id = UUID()
+    let itemName: String
+    let itemSize: UInt64?
+    let digests: [ArchiveHashDigest]
+}
+
 final class CancellationFlag: @unchecked Sendable {
     private let lock = NSLock()
     private var cancelled = false
@@ -68,16 +81,45 @@ final class CancellationFlag: @unchecked Sendable {
     }
 }
 
+private final class OverwriteReplyBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: OverwriteDecision = .cancel
+
+    func set(_ decision: OverwriteDecision) {
+        lock.lock()
+        value = decision
+        lock.unlock()
+    }
+
+    func get() -> OverwriteDecision {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+}
+
 @MainActor
 final class AppViewModel: ObservableObject {
     let leftPane: PaneViewModel
     let rightPane: PaneViewModel
 
-    @Published var isDualPane: Bool = false
+    @Published var isDualPane: Bool = false {
+        didSet { persistSessionState() }
+    }
     @Published var activeSide: PaneSide = .left
     @Published var recentArchiveURLs: [URL] = []
     @Published var operationBanner: OperationBannerState?
     @Published private(set) var modifiedEditSessions: [TempEditSession] = []
+
+    @Published var eliminateRootDuplication: Bool = true {
+        didSet { persistSessionState() }
+    }
+    @Published var excludeMacOSMetadataByDefault: Bool = true {
+        didSet { persistSessionState() }
+    }
+    @Published var preserveMacXattrByDefault: Bool = false {
+        didSet { persistSessionState() }
+    }
 
     @Published var passwordPrompt: PasswordPromptRequest?
     @Published var compressSheet: CompressSheetRequest?
@@ -85,10 +127,15 @@ final class AppViewModel: ObservableObject {
     @Published var renameSheet: RenameSheetRequest?
     @Published var newFolderSheet: NewFolderSheetRequest?
     @Published var propertiesSheet: PropertiesSheetRequest?
+    @Published var overwriteConflictSheet: OverwriteConflictSheetRequest?
+    @Published var checksumSheet: ChecksumSheetRequest?
+    @Published var showSettingsSheet: Bool = false
 
     private var allEditSessions: [TempEditSession] = []
     private var currentCancellation: CancellationFlag?
     private let quickLookTempDir: URL
+    private let clipboardTempDir: URL
+    private var isRestoringSession = false
 
     init() {
         let home = FileManager.default.homeDirectoryForCurrentUser
@@ -99,14 +146,18 @@ final class AppViewModel: ObservableObject {
         self.rightPane = PaneViewModel(side: .right, initialFolder: desktop)
         self.quickLookTempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("SevenZipMac-QuickLook-\(UUID().uuidString)", isDirectory: true)
+        self.clipboardTempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SevenZipMac-Clipboard-\(UUID().uuidString)", isDirectory: true)
 
         wirePaneCallbacks(leftPane)
         wirePaneCallbacks(rightPane)
+        restoreSessionIfAvailable()
     }
 
     deinit {
         for s in allEditSessions { s.cleanup() }
         try? FileManager.default.removeItem(at: quickLookTempDir)
+        try? FileManager.default.removeItem(at: clipboardTempDir)
     }
 
     var activePane: PaneViewModel {
@@ -132,8 +183,50 @@ final class AppViewModel: ObservableObject {
         if let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first {
             list.append(SidebarShortcut(id: "docs", title: "Документы", systemImage: "doc.text", url: docs))
         }
+        list.append(SidebarShortcut(id: "apps", title: "Программы", systemImage: "square.grid.2x2", url: URL(fileURLWithPath: "/Applications")))
         list.append(SidebarShortcut(id: "root", title: "Macintosh HD", systemImage: "internaldrive", url: URL(fileURLWithPath: "/")))
         return list
+    }
+
+    // MARK: - Session Persistence
+
+    private func restoreSessionIfAvailable() {
+        guard let saved = SessionStore.load() else { return }
+        isRestoringSession = true
+        defer { isRestoringSession = false }
+
+        isDualPane = saved.isDualPane
+        eliminateRootDuplication = saved.eliminateRootDuplication
+        excludeMacOSMetadataByDefault = saved.excludeMacOSMetadataByDefault
+        preserveMacXattrByDefault = saved.preserveMacXattrByDefault
+        leftPane.showHiddenFiles = saved.showHiddenFiles
+        rightPane.showHiddenFiles = saved.showHiddenFiles
+
+        leftPane.restorePersistedTabs(paths: saved.leftFolderPaths, activeIndex: saved.leftActiveTabIndex)
+        rightPane.restorePersistedTabs(paths: saved.rightFolderPaths, activeIndex: saved.rightActiveTabIndex)
+
+        recentArchiveURLs = saved.recentArchivePaths
+            .map { URL(fileURLWithPath: $0) }
+            .filter { FileManager.default.fileExists(atPath: $0.path) }
+    }
+
+    func persistSessionState() {
+        guard !isRestoringSession else { return }
+        let leftInfo = leftPane.persistableTabPaths
+        let rightInfo = rightPane.persistableTabPaths
+        let snap = PersistedSession(
+            isDualPane: isDualPane,
+            showHiddenFiles: leftPane.showHiddenFiles,
+            leftFolderPaths: leftInfo.paths,
+            leftActiveTabIndex: leftInfo.activeIndex,
+            rightFolderPaths: rightInfo.paths,
+            rightActiveTabIndex: rightInfo.activeIndex,
+            recentArchivePaths: recentArchiveURLs.map(\.path),
+            eliminateRootDuplication: eliminateRootDuplication,
+            excludeMacOSMetadataByDefault: excludeMacOSMetadataByDefault,
+            preserveMacXattrByDefault: preserveMacXattrByDefault
+        )
+        SessionStore.save(snap)
     }
 
     func toggleDualPane() {
@@ -146,6 +239,15 @@ final class AppViewModel: ObservableObject {
     func switchActivePane() {
         guard isDualPane else { return }
         activeSide = activeSide.opposite
+    }
+
+    func openNewTabInActivePane() {
+        activePane.openNewTab()
+    }
+
+    /// Returns true if an inner tab was closed, false if caller should close window.
+    func closeActiveTabOrAllowWindowClose() -> Bool {
+        activePane.closeTab()
     }
 
     func cancelRunningOperation() {
@@ -176,6 +278,244 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    // MARK: - Finder Right-Click Services (`NSServices`)
+
+    func finderServiceExtract(urls: [URL], alwaysCreateSubfolder: Bool, passwordOverride: String? = nil) {
+        let archives = urls.filter { SevenZipEngine.isBrowsableArchive(url: $0) }
+        guard let firstArc = archives.first else {
+            openExternalURLs(urls)
+            return
+        }
+        let elimDup = eliminateRootDuplication
+        let pwd = passwordOverride ?? KeychainPasswordStore.password(for: firstArc)
+        let interactiveOverwrite = makeInteractiveOverwriteBridge()
+
+        runBackgroundOperation(title: "Извлечение (Finder)", initialDetail: firstArc.lastPathComponent) { flag, report in
+            for arcURL in archives {
+                if flag.isCancelled { throw ArchiveError.cancelled }
+                let localPwd = KeychainPasswordStore.password(for: arcURL) ?? pwd
+                let opened = try OpenArchive(url: arcURL, password: localPwd)
+                defer { opened.close() }
+                let tree = VirtualArchiveTree(entries: opened.entries)
+
+                let plan: ExtractionPlan
+                if alwaysCreateSubfolder {
+                    plan = SmartExtractionPlanner.planDialogExtraction(
+                        archiveURL: arcURL,
+                        tree: tree,
+                        selectedPaths: [],
+                        currentStripPrefix: "",
+                        baseDestination: arcURL.deletingLastPathComponent(),
+                        createArchiveSubfolder: true,
+                        eliminateRootDuplication: elimDup
+                    )
+                } else {
+                    plan = SmartExtractionPlanner.planSmartExtractHere(archiveURL: arcURL, tree: tree)
+                }
+
+                try opened.extract(
+                    indices: nil,
+                    to: plan.finalDestinationDirectory,
+                    stripPrefix: plan.effectiveStripPrefix,
+                    fullPaths: true,
+                    overwrite: .askInteractive,
+                    password: localPwd,
+                    overwriteHandler: interactiveOverwrite,
+                    progress: { prog in
+                        report(prog)
+                        return !flag.isCancelled
+                    }
+                )
+            }
+        } onSuccess: { [weak self] in
+            self?.leftPane.reloadCurrentLocation()
+            if self?.isDualPane == true { self?.rightPane.reloadCurrentLocation() }
+            self?.showTransientSuccess("Извлечено архивов: \(archives.count)")
+        } onPasswordNeeded: { [weak self] wrong in
+            guard let self else { return }
+            self.passwordPrompt = PasswordPromptRequest(archiveURL: firstArc, isRetryAfterFailure: wrong) { supplied, remember in
+                guard let supplied, !supplied.isEmpty else { return }
+                self.leftPane.storePassword(supplied, for: firstArc, saveToKeychain: remember)
+                self.finderServiceExtract(urls: urls, alwaysCreateSubfolder: alwaysCreateSubfolder, passwordOverride: supplied)
+            }
+        }
+    }
+
+    func finderServiceQuickCompress7z(urls: [URL]) {
+        guard let first = urls.first else { return }
+        let parentDir = first.deletingLastPathComponent()
+        let baseName = urls.count == 1
+            ? (first.deletingPathExtension().lastPathComponent.isEmpty ? first.lastPathComponent : first.deletingPathExtension().lastPathComponent)
+            : parentDir.lastPathComponent
+        let targetURL = parentDir.appendingPathComponent("\(baseName).7z")
+        let opts = CompressionOptions(
+            format: "7z",
+            method: "LZMA2",
+            level: 5,
+            excludeMacOSMetadata: excludeMacOSMetadataByDefault,
+            preserveMacExtendedAttributes: preserveMacXattrByDefault
+        )
+        executeCompression(archiveURL: targetURL, inputURLs: urls, options: opts, password: nil, saveToKeychain: false)
+    }
+
+    func finderServiceOpenCompressDialog(urls: [URL]) {
+        guard let first = urls.first else { return }
+        let parentDir = first.deletingLastPathComponent()
+        let suggested = urls.count == 1
+            ? first.deletingPathExtension().lastPathComponent
+            : parentDir.lastPathComponent
+        compressSheet = CompressSheetRequest(
+            inputURLs: urls,
+            defaultDestinationFolder: parentDir,
+            suggestedArchiveName: suggested.isEmpty ? "Archive" : suggested
+        )
+    }
+
+    // MARK: - System Clipboard (`⌘C` / `⌘V`)
+
+    func copySelectionToPasteboard() {
+        let pane = activePane
+        let selected = pane.selectedActionableRows
+        guard !selected.isEmpty else { return }
+
+        switch pane.location {
+        case .diskFolder:
+            let urls: [NSURL] = selected.compactMap {
+                if case .disk(let d) = $0 { return d.url as NSURL }
+                return nil
+            }
+            guard !urls.isEmpty else { return }
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.writeObjects(urls)
+            showTransientSuccess("Скопировано объектов в буфер обмена: \(urls.count)")
+
+        case .archive(_, let layers, let subpath):
+            guard let topLayer = layers.last else { return }
+            let arcURL = topLayer.archiveFileURL
+            let selectedPaths: [String] = selected.compactMap {
+                if case .archive(let n) = $0 { return n.path }
+                return nil
+            }
+            guard !selectedPaths.isEmpty else { return }
+            let stripPrefix = pane.isShowingFlattenedPaths ? "" : subpath
+            let preservePaths = !pane.isShowingFlattenedPaths
+            let pwd = pane.currentArchivePassword
+            let enc = pane.archiveEncoding
+            let stageSlot = clipboardTempDir.appendingPathComponent(UUID().uuidString, isDirectory: true)
+
+            runBackgroundOperation(title: "Подготовка буфера обмена", initialDetail: topLayer.displayName) { flag, report in
+                try FileManager.default.createDirectory(at: stageSlot, withIntermediateDirectories: true)
+                let opened = try OpenArchive(url: arcURL, password: pwd, encoding: enc)
+                defer { opened.close() }
+                let tree = VirtualArchiveTree(entries: opened.entries)
+                let indices = tree.extractionIndices(for: selectedPaths)
+                try opened.extract(
+                    indices: indices,
+                    to: stageSlot,
+                    stripPrefix: stripPrefix,
+                    fullPaths: preservePaths,
+                    overwrite: .overwriteAll,
+                    password: pwd,
+                    progress: { prog in
+                        report(prog)
+                        return !flag.isCancelled
+                    }
+                )
+            } onSuccess: { [weak self] in
+                guard let self else { return }
+                let topItems = (try? FileManager.default.contentsOfDirectory(
+                    at: stageSlot,
+                    includingPropertiesForKeys: nil,
+                    options: [.skipsHiddenFiles]
+                )) ?? []
+                guard !topItems.isEmpty else { return }
+                let pb = NSPasteboard.general
+                pb.clearContents()
+                pb.writeObjects(topItems.map { $0 as NSURL })
+                self.showTransientSuccess("Скопировано из архива в буфер (\(topItems.count)) — можно нажать ⌘V в Finder")
+            } onPasswordNeeded: { [weak self] wrong in
+                pane.requestPasswordForCurrentArchive(wrongAttempt: wrong) { ok in
+                    if ok { self?.copySelectionToPasteboard() }
+                }
+            }
+        }
+    }
+
+    func pasteFromPasteboard() {
+        let pb = NSPasteboard.general
+        guard let urls = pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL],
+              !urls.isEmpty else {
+            return
+        }
+        handleDroppedURLs(urls, into: activeSide)
+    }
+
+    // MARK: - Checksums (`CRC32 / SHA-256 / XXH64`)
+
+    func computeChecksumsForSelection() {
+        let pane = activePane
+        guard let first = pane.selectedActionableRows.first, !first.isDirectory else {
+            showStatusBanner(
+                title: "Выберите файл",
+                detail: "Выделите файл (на диске или внутри архива) для расчёта контрольных сумм.",
+                isError: false
+            )
+            return
+        }
+
+        switch first {
+        case .parentDirectory:
+            return
+        case .disk(let d):
+            let url = d.url
+            let name = d.name
+            let size = d.size
+            let digestsBox = Box<[ArchiveHashDigest]>([])
+            runBackgroundOperation(title: "Расчёт контрольных сумм", initialDetail: name) { flag, report in
+                digestsBox.value = try SevenZipEngine.computeFileHashes(at: url) { prog in
+                    report(prog)
+                    return !flag.isCancelled
+                }
+            } onSuccess: { [weak self] in
+                self?.checksumSheet = ChecksumSheetRequest(
+                    itemName: name,
+                    itemSize: size,
+                    digests: digestsBox.value
+                )
+            }
+
+        case .archive(let node):
+            guard let entry = node.entry,
+                  let arcURL = pane.location.activeArchiveLayer?.archiveFileURL else { return }
+            let pwd = pane.currentArchivePassword
+            let enc = pane.archiveEncoding
+            let digestsBox = Box<[ArchiveHashDigest]>([])
+            runBackgroundOperation(title: "Расчёт контрольных сумм", initialDetail: node.name) { flag, report in
+                let opened = try OpenArchive(url: arcURL, password: pwd, encoding: enc)
+                defer { opened.close() }
+                digestsBox.value = try opened.computeEntryHashes(
+                    for: entry.index,
+                    password: pwd,
+                    progress: { prog in
+                        report(prog)
+                        return !flag.isCancelled
+                    }
+                )
+            } onSuccess: { [weak self] in
+                self?.checksumSheet = ChecksumSheetRequest(
+                    itemName: node.name,
+                    itemSize: node.displaySize,
+                    digests: digestsBox.value
+                )
+            } onPasswordNeeded: { [weak self] wrong in
+                pane.requestPasswordForCurrentArchive(wrongAttempt: wrong) { ok in
+                    if ok { self?.computeChecksumsForSelection() }
+                }
+            }
+        }
+    }
+
     // MARK: - Item Activation & Quick Look
 
     func activateRow(_ row: PaneRowItem, in side: PaneSide) {
@@ -188,8 +528,12 @@ final class AppViewModel: ObservableObject {
 
         case .disk(let d):
             if d.isDirectory {
+                pane.isFlatView = false
+                pane.filterText = ""
                 pane.navigate(to: .diskFolder(d.url))
             } else if d.isArchiveContainer {
+                pane.isFlatView = false
+                pane.filterText = ""
                 pane.openArchiveFile(d.url)
             } else {
                 NSWorkspace.shared.open(d.url)
@@ -197,8 +541,12 @@ final class AppViewModel: ObservableObject {
 
         case .archive(let node):
             if node.isDirectory {
+                pane.isFlatView = false
+                pane.filterText = ""
                 pane.navigate(to: pane.location.enteringArchiveSubfolder(node.path))
             } else if row.isArchiveFile {
+                pane.isFlatView = false
+                pane.filterText = ""
                 pane.enterNestedArchive(node: node)
             } else {
                 openArchiveEntryExternally(node: node, in: pane)
@@ -234,19 +582,20 @@ final class AppViewModel: ObservableObject {
                 let slot = quickLookTempDir.appendingPathComponent(UUID().uuidString, isDirectory: true)
                 try FileManager.default.createDirectory(at: slot, withIntermediateDirectories: true)
                 let indices = entries.map(\.index)
+                let stripSub = pane.isShowingFlattenedPaths ? "" : pane.location.archiveSubpath
                 try arc.extract(
                     indices: indices,
                     to: slot,
-                    stripPrefix: pane.location.archiveSubpath,
+                    stripPrefix: stripSub,
                     fullPaths: true,
                     overwrite: .overwriteAll,
                     password: pane.currentArchivePassword
                 )
                 let previewURLs = entries.compactMap { entry -> URL? in
                     let rel: String
-                    let sub = VirtualArchiveTree.normalize(pane.location.archiveSubpath)
-                    if !sub.isEmpty && entry.path.hasPrefix(sub + "/") {
-                        rel = String(entry.path.dropFirst(sub.count + 1))
+                    let cleanSub = VirtualArchiveTree.normalize(stripSub)
+                    if !cleanSub.isEmpty && entry.path.hasPrefix(cleanSub + "/") {
+                        rel = String(entry.path.dropFirst(cleanSub.count + 1))
                     } else {
                         rel = entry.path
                     }
@@ -325,7 +674,6 @@ final class AppViewModel: ObservableObject {
                 return nil
             }
             guard !selectedURLs.isEmpty else {
-                // Allow picking files via NSOpenPanel if nothing selected
                 let openPanel = NSOpenPanel()
                 openPanel.title = "Выберите файлы или папки для упаковки"
                 openPanel.directoryURL = currentDir
@@ -386,11 +734,12 @@ final class AppViewModel: ObservableObject {
             } else {
                 defaultDest = rootDiskFolder
             }
+            let strip = (selectedPaths.isEmpty || pane.isShowingFlattenedPaths) ? "" : subpath
             extractSheet = ExtractSheetRequest(
                 paneSide: pane.side,
                 archiveURL: topLayer.archiveFileURL,
                 selectedPaths: selectedPaths,
-                stripPrefix: selectedPaths.isEmpty ? "" : subpath,
+                stripPrefix: strip,
                 defaultDestinationFolder: defaultDest
             )
         } else if let firstSelected = pane.selectedActionableRows.first,
@@ -422,28 +771,41 @@ final class AppViewModel: ObservableObject {
         archiveURL: URL,
         inputURLs: [URL],
         options: CompressionOptions,
-        password: String?
+        password: String?,
+        saveToKeychain: Bool
     ) {
         let paths = inputURLs.map(\.path)
+        if FileManager.default.fileExists(atPath: archiveURL.path) {
+            let alert = NSAlert()
+            alert.messageText = "Заменить архив «\(archiveURL.lastPathComponent)»?"
+            alert.informativeText = "Исходный архив сохранится, если создание новой версии завершится ошибкой или будет отменено."
+            alert.addButton(withTitle: "Заменить")
+            alert.addButton(withTitle: "Отмена")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
         runBackgroundOperation(title: "Создание архива", initialDetail: archiveURL.lastPathComponent) { flag, report in
-            if FileManager.default.fileExists(atPath: archiveURL.path) {
-                try FileManager.default.removeItem(at: archiveURL)
-            }
-            try SevenZipEngine.createOrUpdateArchive(
-                at: archiveURL,
-                inputPaths: paths,
-                baseDirectory: nil,
-                options: options,
-                password: password
-            ) { prog in
-                report(prog)
-                return !flag.isCancelled
+            if options.splitVolumeBytes > 0 {
+                // Never overwrite an existing volume set implicitly.
+                guard !FileManager.default.fileExists(atPath: archiveURL.path + ".001") else {
+                    throw ArchiveError.ioError("Набор томов уже существует. Выберите другое имя архива.")
+                }
+                try SevenZipEngine.createOrUpdateArchive(at: archiveURL, inputPaths: paths, options: options, password: password) { prog in
+                    report(prog)
+                    return !flag.isCancelled
+                }
+            } else {
+                try StagedReplacement.publish(at: archiveURL) { stagedURL in
+                    try SevenZipEngine.createOrUpdateArchive(at: stagedURL, inputPaths: paths, options: options, password: password) { prog in
+                        report(prog)
+                        return !flag.isCancelled
+                    }
+                }
             }
         } onSuccess: { [weak self] in
             guard let self else { return }
             if let password, !password.isEmpty {
-                self.leftPane.storePassword(password, for: archiveURL)
-                self.rightPane.storePassword(password, for: archiveURL)
+                self.leftPane.storePassword(password, for: archiveURL, saveToKeychain: saveToKeychain)
+                self.rightPane.storePassword(password, for: archiveURL, saveToKeychain: false)
             }
             self.leftPane.reloadCurrentLocation()
             if self.isDualPane { self.rightPane.reloadCurrentLocation() }
@@ -455,46 +817,53 @@ final class AppViewModel: ObservableObject {
         request: ExtractSheetRequest,
         destinationFolder: URL,
         createArchiveSubfolder: Bool,
+        eliminateDupRoot: Bool,
         fullPaths: Bool,
         overwriteMode: OverwriteMode,
         passwordOverride: String?
     ) {
         let pane = (request.paneSide == .left) ? leftPane : rightPane
-        let finalDest: URL
-        if createArchiveSubfolder {
-            let folderName = Self.archiveBaseName(for: request.archiveURL)
-            finalDest = destinationFolder.appendingPathComponent(folderName, isDirectory: true)
-        } else {
-            finalDest = destinationFolder
-        }
-
         let pwd = (passwordOverride?.isEmpty == false)
             ? passwordOverride
-            : pane.currentArchivePassword
+            : (pane.currentArchivePassword ?? KeychainPasswordStore.password(for: request.archiveURL))
 
         let archiveURL = request.archiveURL
         let selectedPaths = request.selectedPaths
         let stripPrefix = request.stripPrefix
+        let enc = pane.archiveEncoding
+        let interactiveOverwrite = makeInteractiveOverwriteBridge()
+        let finalFolderBox = Box<URL>(destinationFolder)
+        let overwriteCallback: (@Sendable (OverwriteConflict) -> OverwriteDecision)? =
+            overwriteMode == .askInteractive ? interactiveOverwrite : nil
 
         runBackgroundOperation(title: "Извлечение", initialDetail: archiveURL.lastPathComponent) { flag, report in
-            let opened = try OpenArchive(url: archiveURL, password: pwd)
+            let opened = try OpenArchive(url: archiveURL, password: pwd, encoding: enc)
             defer { opened.close() }
 
-            let indices: [UInt32]?
-            if selectedPaths.isEmpty {
-                indices = nil
-            } else {
-                let tree = VirtualArchiveTree(entries: opened.entries)
-                indices = tree.extractionIndices(for: selectedPaths)
-            }
+            let tree = VirtualArchiveTree(entries: opened.entries)
+            let plan = SmartExtractionPlanner.planDialogExtraction(
+                archiveURL: archiveURL,
+                tree: tree,
+                selectedPaths: selectedPaths,
+                currentStripPrefix: stripPrefix,
+                baseDestination: destinationFolder,
+                createArchiveSubfolder: createArchiveSubfolder,
+                eliminateRootDuplication: eliminateDupRoot
+            )
+            finalFolderBox.value = plan.finalDestinationDirectory
+
+            let indices: [UInt32]? = selectedPaths.isEmpty
+                ? nil
+                : tree.extractionIndices(for: selectedPaths)
 
             try opened.extract(
                 indices: indices,
-                to: finalDest,
-                stripPrefix: stripPrefix,
+                to: plan.finalDestinationDirectory,
+                stripPrefix: plan.effectiveStripPrefix,
                 fullPaths: fullPaths,
                 overwrite: overwriteMode,
                 password: pwd,
+                overwriteHandler: overwriteCallback,
                 progress: { prog in
                     report(prog)
                     return !flag.isCancelled
@@ -507,18 +876,20 @@ final class AppViewModel: ObservableObject {
             }
             self.leftPane.reloadCurrentLocation()
             if self.isDualPane { self.rightPane.reloadCurrentLocation() }
-            self.showTransientSuccess("Извлечено в «\(finalDest.lastPathComponent)»")
+            self.showTransientSuccess("Извлечено в «\(finalFolderBox.value.lastPathComponent)»")
         } onPasswordNeeded: { [weak self] wrong in
             guard let self else { return }
             self.passwordPrompt = PasswordPromptRequest(
                 archiveURL: archiveURL,
                 isRetryAfterFailure: wrong
-            ) { supplied in
+            ) { supplied, remember in
                 guard let supplied, !supplied.isEmpty else { return }
+                pane.storePassword(supplied, for: archiveURL, saveToKeychain: remember)
                 self.executeExtraction(
                     request: request,
                     destinationFolder: destinationFolder,
                     createArchiveSubfolder: createArchiveSubfolder,
+                    eliminateDupRoot: eliminateDupRoot,
                     fullPaths: fullPaths,
                     overwriteMode: overwriteMode,
                     passwordOverride: supplied
@@ -549,7 +920,7 @@ final class AppViewModel: ObservableObject {
             return
         }
 
-        let pwd = pane.currentArchivePassword
+        let pwd = pane.currentArchivePassword ?? KeychainPasswordStore.password(for: archiveURL)
         runBackgroundOperation(title: "Проверка целостности", initialDetail: archiveURL.lastPathComponent) { flag, report in
             let opened = try OpenArchive(url: archiveURL, password: pwd)
             defer { opened.close() }
@@ -561,15 +932,15 @@ final class AppViewModel: ObservableObject {
             self?.showTransientSuccess("Проверка пройдена: ошибок в «\(archiveURL.lastPathComponent)» не обнаружено")
         } onPasswordNeeded: { [weak self] wrong in
             guard let self else { return }
-            self.passwordPrompt = PasswordPromptRequest(archiveURL: archiveURL, isRetryAfterFailure: wrong) { supplied in
+            self.passwordPrompt = PasswordPromptRequest(archiveURL: archiveURL, isRetryAfterFailure: wrong) { supplied, remember in
                 guard let supplied, !supplied.isEmpty else { return }
-                pane.storePassword(supplied, for: archiveURL)
+                pane.storePassword(supplied, for: archiveURL, saveToKeychain: remember)
                 self.testCurrentArchive()
             }
         }
     }
 
-    /// F5 (Copy) / F6 (Move) between left and right panes, matching 7zFM dual-pane semantics.
+    /// F5 (Copy) / F6 (Move) between left and right panes.
     func copyOrMoveSelectionAcrossPanes(move: Bool) {
         guard isDualPane else {
             if activePane.location.isInsideArchive {
@@ -592,17 +963,47 @@ final class AppViewModel: ObservableObject {
                 return nil
             }
             guard !urls.isEmpty else { return }
+            let interactiveOverwrite = makeInteractiveOverwriteBridge()
+
             runBackgroundOperation(
                 title: move ? "Перемещение" : "Копирование",
                 initialDetail: "\(urls.count) объ."
             ) { flag, _ in
                 let fm = FileManager.default
+                var applyAllDecision: OverwriteDecision?
                 for u in urls {
                     if flag.isCancelled { throw ArchiveError.cancelled }
-                    let target = destFolder.appendingPathComponent(u.lastPathComponent)
+                    var target = destFolder.appendingPathComponent(u.lastPathComponent)
                     if target.standardizedFileURL == u.standardizedFileURL { continue }
                     if fm.fileExists(atPath: target.path) {
-                        try fm.removeItem(at: target)
+                        let srcVals = try? u.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+                        let dstVals = try? target.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+                        let decision = applyAllDecision ?? interactiveOverwrite(
+                            OverwriteConflict(
+                                existingPath: target.path,
+                                existingSize: dstVals?.fileSize.map { UInt64(max(0, $0)) },
+                                existingModifiedDate: dstVals?.contentModificationDate,
+                                newPath: u.path,
+                                newSize: srcVals?.fileSize.map { UInt64(max(0, $0)) },
+                                newModifiedDate: srcVals?.contentModificationDate
+                            )
+                        )
+                        if decision == .replaceAll || decision == .skipAll {
+                            applyAllDecision = decision
+                        }
+                        switch decision {
+                        case .cancel:
+                            throw ArchiveError.cancelled
+                        case .skip, .skipAll:
+                            continue
+                        case .autoRename:
+                            let ext = target.pathExtension
+                            let stem = target.deletingPathExtension().lastPathComponent
+                            let renamed = ext.isEmpty ? "\(stem)_copy" : "\(stem)_copy.\(ext)"
+                            target = destFolder.appendingPathComponent(renamed)
+                        case .replace, .replaceAll:
+                            try fm.removeItem(at: target)
+                        }
                     }
                     if move {
                         try fm.moveItem(at: u, to: target)
@@ -625,22 +1026,32 @@ final class AppViewModel: ObservableObject {
             guard !selectedPaths.isEmpty else { return }
             let canDeleteFromArc = move && (src.activeArchiveSummary?.isUpdatable == true)
             let pwd = src.currentArchivePassword
+            let enc = src.archiveEncoding
             let arcURL = topLayer.archiveFileURL
+            let strip = src.isShowingFlattenedPaths ? "" : srcSubpath
+            let fullPaths = !src.isShowingFlattenedPaths
+            let interactiveOverwrite = makeInteractiveOverwriteBridge()
 
             runBackgroundOperation(
                 title: move ? "Извлечение с удалением" : "Извлечение в соседнюю панель",
                 initialDetail: destFolder.lastPathComponent
             ) { flag, report in
-                let opened = try OpenArchive(url: arcURL, password: pwd)
+                let opened = try OpenArchive(url: arcURL, password: pwd, encoding: enc)
                 let tree = VirtualArchiveTree(entries: opened.entries)
                 let indices = tree.extractionIndices(for: selectedPaths)
+                var skippedAny = false
                 try opened.extract(
                     indices: indices,
                     to: destFolder,
-                    stripPrefix: srcSubpath,
-                    fullPaths: true,
-                    overwrite: .overwriteAll,
+                    stripPrefix: strip,
+                    fullPaths: fullPaths,
+                    overwrite: .askInteractive,
                     password: pwd,
+                    overwriteHandler: { conflict in
+                        let decision = interactiveOverwrite(conflict)
+                        if decision == .skip || decision == .skipAll { skippedAny = true }
+                        return decision
+                    },
                     progress: { prog in
                         report(prog)
                         return !flag.isCancelled
@@ -648,7 +1059,7 @@ final class AppViewModel: ObservableObject {
                 )
                 opened.close()
 
-                if canDeleteFromArc {
+                if canDeleteFromArc && !skippedAny {
                     try SevenZipEngine.deleteItems(
                         in: arcURL,
                         archivePaths: selectedPaths,
@@ -683,7 +1094,7 @@ final class AppViewModel: ObservableObject {
         case (.archive, .archive):
             showStatusBanner(
                 title: "Два архива",
-                detail: "Откройте в целевой панели папку на диске или перетащите файлы напрямую.",
+                detail: "Откройте в целевой панели папку на диске или используйте буфер обмена ⌘C / ⌘V.",
                 isError: false
             )
         }
@@ -704,6 +1115,10 @@ final class AppViewModel: ObservableObject {
         let arcURL = topLayer.archiveFileURL
         let cleanSubpath = VirtualArchiveTree.normalize(targetSubpath)
         let pwd = dstPane.currentArchivePassword
+        let opts = CompressionOptions(
+            excludeMacOSMetadata: deleteSourcesAfter ? false : excludeMacOSMetadataByDefault,
+            preserveMacExtendedAttributes: preserveMacXattrByDefault
+        )
 
         runBackgroundOperation(title: "Добавление в архив", initialDetail: topLayer.displayName) { flag, report in
             let fm = FileManager.default
@@ -712,14 +1127,13 @@ final class AppViewModel: ObservableObject {
                     at: arcURL,
                     inputPaths: urls.map(\.path),
                     baseDirectory: nil,
-                    options: CompressionOptions(),
+                    options: opts,
                     password: pwd
                 ) { prog in
                     report(prog)
                     return !flag.isCancelled
                 }
             } else {
-                // Stage files under `<temp>/<targetSubpath>/...` using APFS CoW copyItem so relative paths inside archive match
                 let stageRoot = fm.temporaryDirectory.appendingPathComponent("SevenZipMac-AddStage-\(UUID().uuidString)", isDirectory: true)
                 defer { try? fm.removeItem(at: stageRoot) }
                 let nestedStage = stageRoot.appendingPathComponent(cleanSubpath, isDirectory: true)
@@ -736,7 +1150,7 @@ final class AppViewModel: ObservableObject {
                     at: arcURL,
                     inputPaths: relInputs,
                     baseDirectory: stageRoot,
-                    options: CompressionOptions(),
+                    options: opts,
                     password: pwd
                 ) { prog in
                     report(prog)
@@ -769,14 +1183,41 @@ final class AppViewModel: ObservableObject {
 
         switch pane.location {
         case .diskFolder(let destFolder):
+            let interactiveOverwrite = makeInteractiveOverwriteBridge()
             runBackgroundOperation(title: "Копирование", initialDetail: destFolder.lastPathComponent) { flag, _ in
                 let fm = FileManager.default
+                var applyAll: OverwriteDecision?
                 for u in urls {
                     if flag.isCancelled { throw ArchiveError.cancelled }
-                    let target = destFolder.appendingPathComponent(u.lastPathComponent)
-                    if target.standardizedFileURL == u.standardizedFileURL { continue }
-                    if fm.fileExists(atPath: target.path) {
-                        try fm.removeItem(at: target)
+                    var target = destFolder.appendingPathComponent(u.lastPathComponent)
+                    if target.standardizedFileURL == u.standardizedFileURL {
+                        let ext = target.pathExtension
+                        let stem = target.deletingPathExtension().lastPathComponent
+                        target = destFolder.appendingPathComponent(ext.isEmpty ? "\(stem)_copy" : "\(stem)_copy.\(ext)")
+                    } else if fm.fileExists(atPath: target.path) {
+                        let srcVals = try? u.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+                        let dstVals = try? target.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+                        let decision = applyAll ?? interactiveOverwrite(
+                            OverwriteConflict(
+                                existingPath: target.path,
+                                existingSize: dstVals?.fileSize.map { UInt64(max(0, $0)) },
+                                existingModifiedDate: dstVals?.contentModificationDate,
+                                newPath: u.path,
+                                newSize: srcVals?.fileSize.map { UInt64(max(0, $0)) },
+                                newModifiedDate: srcVals?.contentModificationDate
+                            )
+                        )
+                        if decision == .replaceAll || decision == .skipAll { applyAll = decision }
+                        switch decision {
+                        case .cancel: throw ArchiveError.cancelled
+                        case .skip, .skipAll: continue
+                        case .autoRename:
+                            let ext = target.pathExtension
+                            let stem = target.deletingPathExtension().lastPathComponent
+                            target = destFolder.appendingPathComponent(ext.isEmpty ? "\(stem)_copy" : "\(stem)_copy.\(ext)")
+                        case .replace, .replaceAll:
+                            try fm.removeItem(at: target)
+                        }
                     }
                     try fm.copyItem(at: u, to: target)
                 }
@@ -882,7 +1323,7 @@ final class AppViewModel: ObservableObject {
                     at: arcURL,
                     inputPaths: [relPath],
                     baseDirectory: stage,
-                    options: CompressionOptions(),
+                    options: CompressionOptions(excludeMacOSMetadata: true),
                     password: pwd
                 ) { prog in
                     report(prog)
@@ -962,6 +1403,26 @@ final class AppViewModel: ObservableObject {
 
     // MARK: - Helpers
 
+    private func makeInteractiveOverwriteBridge() -> @Sendable (OverwriteConflict) -> OverwriteDecision {
+        return { [weak self] conflict in
+            let sem = DispatchSemaphore(value: 0)
+            let replyBox = OverwriteReplyBox()
+            Task { @MainActor [weak self] in
+                guard let self else {
+                    replyBox.set(.cancel)
+                    sem.signal()
+                    return
+                }
+                self.overwriteConflictSheet = OverwriteConflictSheetRequest(conflict: conflict) { decision in
+                    replyBox.set(decision)
+                    sem.signal()
+                }
+            }
+            sem.wait()
+            return replyBox.get()
+        }
+    }
+
     private func wirePaneCallbacks(_ pane: PaneViewModel) {
         pane.onRequestPassword = { [weak self] archiveURL, isRetry, completion in
             guard let self else {
@@ -970,9 +1431,13 @@ final class AppViewModel: ObservableObject {
             }
             self.passwordPrompt = PasswordPromptRequest(
                 archiveURL: archiveURL,
-                isRetryAfterFailure: isRetry,
-                completion: completion
-            )
+                isRetryAfterFailure: isRetry
+            ) { supplied, remember in
+                if let supplied, !supplied.isEmpty {
+                    pane.storePassword(supplied, for: archiveURL, saveToKeychain: remember)
+                }
+                completion(supplied)
+            }
         }
         pane.onArchiveOpened = { [weak self] url in
             guard let self else { return }
@@ -982,6 +1447,10 @@ final class AppViewModel: ObservableObject {
             if self.recentArchiveURLs.count > 8 {
                 self.recentArchiveURLs = Array(self.recentArchiveURLs.prefix(8))
             }
+            self.persistSessionState()
+        }
+        pane.onLocationChanged = { [weak self] in
+            self?.persistSessionState()
         }
     }
 
@@ -1092,11 +1561,11 @@ final class AppViewModel: ObservableObject {
     }
 
     static func archiveBaseName(for url: URL) -> String {
-        let name = url.lastPathComponent
-        let compoundSuffixes = [".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst", ".tar.lzma", ".7z.001", ".zip.001"]
-        for suffix in compoundSuffixes where name.lowercased().hasSuffix(suffix) {
-            return String(name.dropLast(suffix.count))
-        }
-        return url.deletingPathExtension().lastPathComponent
+        SmartExtractionPlanner.archiveBaseName(for: url)
     }
+}
+
+private final class Box<T>: @unchecked Sendable {
+    var value: T
+    init(_ value: T) { self.value = value }
 }

@@ -7,6 +7,7 @@ struct PasswordPromptSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var password: String = ""
     @State private var revealPassword: Bool = false
+    @State private var saveToKeychain: Bool = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -51,10 +52,13 @@ struct PasswordPromptSheet: View {
                 .help(revealPassword ? "Скрыть пароль" : "Показать пароль")
             }
 
+            Toggle("Запомнить пароль в Связке ключей macOS", isOn: $saveToKeychain)
+                .font(.callout)
+
             HStack {
                 Spacer()
                 Button("Отмена", role: .cancel) {
-                    request.completion(nil)
+                    request.completion(nil, false)
                     dismiss()
                 }
                 .keyboardShortcut(.cancelAction)
@@ -67,19 +71,21 @@ struct PasswordPromptSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 400)
+        .frame(width: 420)
     }
 
     private func submit() {
         guard !password.isEmpty else { return }
-        request.completion(password)
+        request.completion(password, saveToKeychain)
         dismiss()
     }
 }
 
 struct CompressSheetView: View {
     let request: CompressSheetRequest
-    let onConfirm: (URL, CompressionOptions, String?) -> Void
+    let defaultExcludeMacJunk: Bool
+    let defaultPreserveXattr: Bool
+    let onConfirm: (URL, CompressionOptions, String?, Bool) -> Void
 
     @Environment(\.dismiss) private var dismiss
 
@@ -89,21 +95,30 @@ struct CompressSheetView: View {
     @State private var compressionLevel: Int = 5
     @State private var method: String = "LZMA2"
     @State private var dictionarySizeKB: UInt32 = 16384
-    @State private var solidMode: Int = -1 // -1 default solid, 0 non-solid
-    @State private var splitPresetMB: Int = 0 // 0 = single file
+    @State private var solidMode: Int = -1
+    @State private var splitPresetMB: Int = 0
     @State private var password: String = ""
     @State private var confirmPassword: String = ""
     @State private var encryptHeaders: Bool = true
+    @State private var savePasswordInKeychain: Bool = true
     @State private var storeSymlinks: Bool = true
+    @State private var excludeMacOSMetadata: Bool
+    @State private var preserveMacXattr: Bool
 
     init(
         request: CompressSheetRequest,
-        onConfirm: @escaping (URL, CompressionOptions, String?) -> Void
+        defaultExcludeMacJunk: Bool,
+        defaultPreserveXattr: Bool,
+        onConfirm: @escaping (URL, CompressionOptions, String?, Bool) -> Void
     ) {
         self.request = request
+        self.defaultExcludeMacJunk = defaultExcludeMacJunk
+        self.defaultPreserveXattr = defaultPreserveXattr
         self.onConfirm = onConfirm
         _archiveBaseName = State(initialValue: request.suggestedArchiveName)
         _destinationFolder = State(initialValue: request.defaultDestinationFolder)
+        _excludeMacOSMetadata = State(initialValue: defaultExcludeMacJunk)
+        _preserveMacXattr = State(initialValue: defaultPreserveXattr)
     }
 
     private var availableMethods: [String] {
@@ -202,8 +217,16 @@ struct CompressSheetView: View {
                         Text("700 МБ (CD)").tag(700)
                         Text("4096 МБ (FAT32)").tag(4096)
                     }
+                }
 
+                Section("Совместимость macOS ↔ Windows / Linux") {
                     Toggle("Сохранять символические ссылки", isOn: $storeSymlinks)
+                    Toggle("Не включать служебные файлы (.DS_Store, ._*, __MACOSX)", isOn: $excludeMacOSMetadata)
+                        .disabled(preserveMacXattr)
+                    Toggle("Сохранять расширенные атрибуты macOS (xattr / теги Finder)", isOn: $preserveMacXattr)
+                        .onChange(of: preserveMacXattr) { _, on in
+                            if on { excludeMacOSMetadata = false }
+                        }
                 }
 
                 if format == "7z" || format == "zip" {
@@ -219,6 +242,8 @@ struct CompressSheetView: View {
                             Toggle("Шифровать имена файлов (-mhe=on)", isOn: $encryptHeaders)
                                 .disabled(password.isEmpty)
                         }
+                        Toggle("Сохранить пароль в Связке ключей macOS", isOn: $savePasswordInKeychain)
+                            .disabled(password.isEmpty)
                     }
                 }
             }
@@ -247,9 +272,11 @@ struct CompressSheetView: View {
                         solidBlockBytes: Int64(solidMode),
                         splitVolumeBytes: splitPresetMB > 0 ? UInt64(splitPresetMB) * 1024 * 1024 : 0,
                         encryptHeaders: format == "7z" && !password.isEmpty && encryptHeaders,
-                        storeSymlinks: storeSymlinks
+                        storeSymlinks: storeSymlinks,
+                        excludeMacOSMetadata: excludeMacOSMetadata,
+                        preserveMacExtendedAttributes: preserveMacXattr
                     )
-                    onConfirm(targetArchiveURL, opts, password.isEmpty ? nil : password)
+                    onConfirm(targetArchiveURL, opts, password.isEmpty ? nil : password, savePasswordInKeychain)
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
@@ -257,7 +284,7 @@ struct CompressSheetView: View {
             }
         }
         .padding(18)
-        .frame(width: 520, height: 590)
+        .frame(width: 540, height: 630)
     }
 
     private func chooseFolder() {
@@ -274,25 +301,29 @@ struct CompressSheetView: View {
 
 struct ExtractSheetView: View {
     let request: ExtractSheetRequest
-    let onConfirm: (URL, Bool, Bool, OverwriteMode, String?) -> Void
+    let defaultEliminateDup: Bool
+    let onConfirm: (URL, Bool, Bool, Bool, OverwriteMode, String?) -> Void
 
     @Environment(\.dismiss) private var dismiss
 
     @State private var destinationFolder: URL
     @State private var createArchiveSubfolder: Bool
+    @State private var eliminateDupRoot: Bool
     @State private var fullPaths: Bool = true
-    @State private var overwriteMode: OverwriteMode = .overwriteAll
+    @State private var overwriteMode: OverwriteMode = .askInteractive
     @State private var password: String = ""
 
     init(
         request: ExtractSheetRequest,
-        onConfirm: @escaping (URL, Bool, Bool, OverwriteMode, String?) -> Void
+        defaultEliminateDup: Bool,
+        onConfirm: @escaping (URL, Bool, Bool, Bool, OverwriteMode, String?) -> Void
     ) {
         self.request = request
+        self.defaultEliminateDup = defaultEliminateDup
         self.onConfirm = onConfirm
         _destinationFolder = State(initialValue: request.defaultDestinationFolder)
-        // When extracting the whole archive, default to creating a clean subfolder named after the archive
         _createArchiveSubfolder = State(initialValue: request.selectedPaths.isEmpty)
+        _eliminateDupRoot = State(initialValue: defaultEliminateDup)
     }
 
     var body: some View {
@@ -323,6 +354,11 @@ struct ExtractSheetView: View {
                         "Создать подпапку «\(AppViewModel.archiveBaseName(for: request.archiveURL))»",
                         isOn: $createArchiveSubfolder
                     )
+
+                    Toggle(
+                        "Устранять дублирование корневой папки (без Project/Project)",
+                        isOn: $eliminateDupRoot
+                    )
                 }
 
                 Section("Режим путей и перезаписи") {
@@ -332,7 +368,8 @@ struct ExtractSheetView: View {
                     }
 
                     Picker("При совпадении имён", selection: $overwriteMode) {
-                        Text("Заменить существующие файлы").tag(OverwriteMode.overwriteAll)
+                        Text("Спрашивать подтверждение (сравнение файлов)").tag(OverwriteMode.askInteractive)
+                        Text("Заменить существующие без запроса").tag(OverwriteMode.overwriteAll)
                         Text("Пропустить существующие файлы").tag(OverwriteMode.skipExisting)
                         Text("Автопереименование извлекаемых файлов").tag(OverwriteMode.autoRenameExtracted)
                         Text("Автопереименование старых файлов").tag(OverwriteMode.autoRenameExisting)
@@ -340,7 +377,7 @@ struct ExtractSheetView: View {
                 }
 
                 Section("Пароль (если зашифрован)") {
-                    SecureField("Оставьте пустым, если пароль не требуется или уже введён", text: $password)
+                    SecureField("Оставьте пустым, если пароль не требуется или сохранён", text: $password)
                 }
             }
             .formStyle(.grouped)
@@ -356,6 +393,7 @@ struct ExtractSheetView: View {
                     onConfirm(
                         destinationFolder,
                         createArchiveSubfolder,
+                        eliminateDupRoot,
                         fullPaths,
                         overwriteMode,
                         password.isEmpty ? nil : password
@@ -366,7 +404,198 @@ struct ExtractSheetView: View {
             }
         }
         .padding(18)
-        .frame(width: 490, height: 420)
+        .frame(width: 510, height: 460)
+    }
+}
+
+struct OverwriteConflictSheetView: View {
+    let request: OverwriteConflictSheetRequest
+    @Environment(\.dismiss) private var dismiss
+
+    private func respond(_ decision: OverwriteDecision) {
+        request.respond(decision)
+        dismiss()
+    }
+
+    var body: some View {
+        let c = request.conflict
+        let fileName = (c.existingPath as NSString).lastPathComponent
+
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 10) {
+                Image(systemName: "doc.on.doc.fill")
+                    .font(.system(size: 22))
+                    .foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Подтверждение замены файла")
+                        .font(.headline)
+                    Text("В папке назначения уже существует файл «\(fileName)».")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 10) {
+                GridRow {
+                    Text("Существующий на диске:")
+                        .font(.callout.weight(.semibold))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Размер: \(ByteFormatting.string(for: c.existingSize)) · Изменён: \(ByteFormatting.dateString(c.existingModifiedDate))")
+                            .font(.callout)
+                            .monospacedDigit()
+                        Text(c.existingPath)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.head)
+                    }
+                }
+                Divider()
+                GridRow {
+                    Text("Новый из архива:")
+                        .font(.callout.weight(.semibold))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Размер: \(ByteFormatting.string(for: c.newSize)) · Изменён: \(ByteFormatting.dateString(c.newModifiedDate))")
+                            .font(.callout)
+                            .monospacedDigit()
+                        Text(c.newPath)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+            }
+            .padding(12)
+            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            HStack(spacing: 8) {
+                Button("Отмена", role: .cancel) {
+                    respond(.cancel)
+                }
+                .keyboardShortcut(.cancelAction)
+
+                Spacer()
+
+                Button("Автопереименовать") {
+                    respond(.autoRename)
+                }
+
+                Button("Пропустить все") {
+                    respond(.skipAll)
+                }
+
+                Button("Пропустить") {
+                    respond(.skip)
+                }
+
+                Button("Заменить все") {
+                    respond(.replaceAll)
+                }
+
+                Button("Заменить") {
+                    respond(.replace)
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(20)
+        .frame(width: 600)
+    }
+}
+
+struct ChecksumSheetView: View {
+    let request: ChecksumSheetRequest
+    @Environment(\.dismiss) private var dismiss
+    @State private var expectedHash: String = ""
+    @State private var copiedAlgo: String?
+
+    private var normalizedExpected: String {
+        expectedHash.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private var matchedDigest: ArchiveHashDigest? {
+        guard !normalizedExpected.isEmpty else { return nil }
+        return request.digests.first { $0.hex.lowercased() == normalizedExpected }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Контрольные суммы: \(request.itemName)")
+                        .font(.headline)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text("Размер: \(ByteFormatting.string(for: request.itemSize))")
+                        .font(.caption)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+
+            Form {
+                Section("Вычисленные хеши (движок 7-Zip)") {
+                    ForEach(request.digests) { digest in
+                        let isMatch = !normalizedExpected.isEmpty && digest.hex.lowercased() == normalizedExpected
+                        HStack(spacing: 10) {
+                            Text(digest.algorithm)
+                                .font(.system(size: 12, weight: .semibold))
+                                .frame(width: 78, alignment: .leading)
+
+                            Text(digest.hex)
+                                .font(.system(size: 11.5, design: .monospaced))
+                                .textSelection(.enabled)
+                                .foregroundStyle(isMatch ? .green : .primary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+
+                            Spacer()
+
+                            Button {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(digest.hex, forType: .string)
+                                copiedAlgo = digest.algorithm
+                            } label: {
+                                Image(systemName: copiedAlgo == digest.algorithm ? "checkmark" : "doc.on.doc")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Скопировать \(digest.algorithm)")
+                        }
+                    }
+                }
+
+                Section("Проверка совпадения") {
+                    TextField("Вставьте ожидаемый хеш (SHA-256, CRC32, MD5…) для сверки", text: $expectedHash)
+                        .font(.system(size: 12, design: .monospaced))
+
+                    if !normalizedExpected.isEmpty {
+                        if let match = matchedDigest {
+                            Label("Совпадает с \(match.algorithm)", systemImage: "checkmark.seal.fill")
+                                .foregroundStyle(.green)
+                                .font(.callout.weight(.medium))
+                        } else {
+                            Label("Не совпадает ни с одной вычисленной суммой", systemImage: "xmark.octagon.fill")
+                                .foregroundStyle(.red)
+                                .font(.callout.weight(.medium))
+                        }
+                    }
+                }
+            }
+            .formStyle(.grouped)
+
+            HStack {
+                Spacer()
+                Button("Закрыть") {
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(18)
+        .frame(width: 580, height: 470)
     }
 }
 

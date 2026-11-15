@@ -98,7 +98,15 @@ struct MainWindowView: View {
                 } label: {
                     Label("Тест", systemImage: "checkmark.shield")
                 }
-                .help("Проверить целостность архива (⌘T)")
+                .help("Проверить целостность архива (⇧⌘T)")
+
+                Button {
+                    appVM.computeChecksumsForSelection()
+                } label: {
+                    Label("Хеш", systemImage: "number")
+                }
+                .disabled(appVM.activePane.selectedActionableRows.first.map { $0.isDirectory } ?? true)
+                .help("Вычислить CRC32, SHA-256 и XXH64 выбранного файла")
 
                 Divider()
 
@@ -154,21 +162,30 @@ struct MainWindowView: View {
             PasswordPromptSheet(request: req)
         }
         .sheet(item: $appVM.compressSheet) { req in
-            CompressSheetView(request: req) { archiveURL, options, password in
+            CompressSheetView(
+                request: req,
+                defaultExcludeMacJunk: appVM.excludeMacOSMetadataByDefault,
+                defaultPreserveXattr: appVM.preserveMacXattrByDefault
+            ) { archiveURL, options, password, remember in
                 appVM.executeCompression(
                     archiveURL: archiveURL,
                     inputURLs: req.inputURLs,
                     options: options,
-                    password: password
+                    password: password,
+                    saveToKeychain: remember
                 )
             }
         }
         .sheet(item: $appVM.extractSheet) { req in
-            ExtractSheetView(request: req) { dest, createSub, fullPaths, overwrite, pwd in
+            ExtractSheetView(
+                request: req,
+                defaultEliminateDup: appVM.eliminateRootDuplication
+            ) { dest, createSub, elimDup, fullPaths, overwrite, pwd in
                 appVM.executeExtraction(
                     request: req,
                     destinationFolder: dest,
                     createArchiveSubfolder: createSub,
+                    eliminateDupRoot: elimDup,
                     fullPaths: fullPaths,
                     overwriteMode: overwrite,
                     passwordOverride: pwd
@@ -197,6 +214,16 @@ struct MainWindowView: View {
         }
         .sheet(item: $appVM.propertiesSheet) { req in
             PropertiesSheetView(request: req)
+        }
+        .sheet(item: $appVM.checksumSheet) { req in
+            ChecksumSheetView(request: req)
+        }
+        .sheet(item: $appVM.overwriteConflictSheet) { req in
+            OverwriteConflictSheetView(request: req)
+                .interactiveDismissDisabled()
+        }
+        .sheet(isPresented: $appVM.showSettingsSheet) {
+            SettingsSheetView(appVM: appVM)
         }
     }
 }
@@ -266,6 +293,53 @@ private struct FilePaneContainerView: View {
                     .frame(height: 2)
             }
 
+            HStack(spacing: 0) {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 2) {
+                        ForEach(pane.tabs) { tab in
+                            HStack(spacing: 6) {
+                                Button {
+                                    appVM.activeSide = pane.side
+                                    pane.selectTab(tab.id)
+                                } label: {
+                                    Text(tab.title)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                        .frame(minWidth: 60, maxWidth: 160)
+                                }
+                                .buttonStyle(.plain)
+                                if pane.tabs.count > 1 {
+                                    Button {
+                                        appVM.activeSide = pane.side
+                                        pane.closeTab(id: tab.id)
+                                    } label: {
+                                        Image(systemName: "xmark")
+                                            .font(.system(size: 9, weight: .semibold))
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help("Закрыть вкладку")
+                                }
+                            }
+                            .font(.system(size: 12))
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 6)
+                            .background(tab.id == pane.activeTabID ? Color.primary.opacity(0.08) : Color.clear)
+                        }
+                    }
+                }
+                Button {
+                    appVM.activeSide = pane.side
+                    pane.openNewTab()
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 10)
+                .help("Новая вкладка (⌘T)")
+            }
+            .background(Color(nsColor: .windowBackgroundColor))
+            Divider()
+
             PaneBreadcrumbBar(pane: pane, onFocus: {
                 appVM.activeSide = pane.side
             })
@@ -308,6 +382,7 @@ private struct FilePaneContainerView: View {
 private struct PaneBreadcrumbBar: View {
     @ObservedObject var pane: PaneViewModel
     let onFocus: () -> Void
+    @FocusState private var isSearchFocused: Bool
 
     var body: some View {
         HStack(spacing: 8) {
@@ -372,11 +447,37 @@ private struct PaneBreadcrumbBar: View {
                 .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
             }
 
+            Menu {
+                Toggle("Плоский список файлов", isOn: $pane.isFlatView)
+                Toggle("Искать во вложенных папках", isOn: $pane.isDeepSearch)
+                if pane.location.isInsideArchive {
+                    Divider()
+                    Picker("Кодировка имён", selection: $pane.archiveEncoding) {
+                        ForEach(ArchiveNameEncoding.allCases) { encoding in
+                            Text(encoding.title).tag(encoding)
+                        }
+                    }
+                }
+            } label: {
+                Image(systemName: pane.isFlatView ? "list.bullet" : "line.3.horizontal.decrease.circle")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Плоский список, поиск и кодировка архива")
+            .simultaneousGesture(TapGesture().onEnded { onFocus() })
+
             HStack(spacing: 4) {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                TextField("Фильтр", text: $pane.filterText)
+                TextField(pane.isDeepSearch ? "Поиск" : "Фильтр", text: $pane.filterText)
+                    .focused($isSearchFocused)
+                    .onChange(of: isSearchFocused) { _, focused in
+                        if focused { onFocus() }
+                    }
+                    .onChange(of: pane.searchFieldFocusTrigger) { _, _ in
+                        isSearchFocused = true
+                    }
                     .textFieldStyle(.plain)
                     .font(.system(size: 12))
                     .frame(width: 110)

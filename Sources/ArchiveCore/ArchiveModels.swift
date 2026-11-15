@@ -67,6 +67,42 @@ public enum ArchiveError: Error, LocalizedError, Equatable, Sendable {
     }
 }
 
+public enum ArchiveNameEncoding: UInt32, CaseIterable, Identifiable, Codable, Sendable {
+    case auto = 0
+    case utf8 = 65001
+    case cp866 = 866
+    case windows1251 = 1251
+    case koi8r = 20866
+    case windows1252 = 1252
+    case cp437 = 437
+
+    public var id: UInt32 { rawValue }
+
+    public var title: String {
+        switch self {
+        case .auto: return "Авто (UTF-8 / Кириллица)"
+        case .utf8: return "UTF-8"
+        case .cp866: return "CP866 (DOS Кириллица)"
+        case .windows1251: return "Windows-1251 (Кириллица)"
+        case .koi8r: return "KOI8-R"
+        case .windows1252: return "Windows-1252 (Западная)"
+        case .cp437: return "CP437 (DOS US)"
+        }
+    }
+
+    public var shortBadge: String {
+        switch self {
+        case .auto: return "АВТО"
+        case .utf8: return "UTF-8"
+        case .cp866: return "CP866"
+        case .windows1251: return "1251"
+        case .koi8r: return "KOI8"
+        case .windows1252: return "1252"
+        case .cp437: return "CP437"
+        }
+    }
+}
+
 public struct ArchiveFormatInfo: Equatable, Hashable, Sendable {
     public let name: String
     public let extensions: [String]
@@ -118,6 +154,38 @@ public struct ArchiveEntry: Identifiable, Equatable, Hashable, Sendable {
     public let isEncrypted: Bool
     public let isSymlink: Bool
 
+    public init(
+        index: UInt32,
+        path: String,
+        name: String,
+        size: UInt64?,
+        packedSize: UInt64?,
+        modifiedDate: Date?,
+        posixMode: UInt32,
+        attributes: String,
+        crc32: UInt32?,
+        method: String?,
+        symlinkTarget: String?,
+        isDirectory: Bool,
+        isEncrypted: Bool,
+        isSymlink: Bool
+    ) {
+        self.index = index
+        self.path = path
+        self.name = name
+        self.size = size
+        self.packedSize = packedSize
+        self.modifiedDate = modifiedDate
+        self.posixMode = posixMode
+        self.attributes = attributes
+        self.crc32 = crc32
+        self.method = method
+        self.symlinkTarget = symlinkTarget
+        self.isDirectory = isDirectory
+        self.isEncrypted = isEncrypted
+        self.isSymlink = isSymlink
+    }
+
     public var id: UInt32 { index }
 
     public var crcHex: String? {
@@ -126,7 +194,8 @@ public struct ArchiveEntry: Identifiable, Equatable, Hashable, Sendable {
     }
 }
 
-public enum OverwriteMode: Int, CaseIterable, Sendable {
+public enum OverwriteMode: Int, CaseIterable, Codable, Sendable {
+    case askInteractive = 0
     case overwriteAll = 1
     case skipExisting = 2
     case autoRenameExtracted = 3
@@ -134,11 +203,69 @@ public enum OverwriteMode: Int, CaseIterable, Sendable {
 
     var cValue: sz_overwrite_mode_t {
         switch self {
+        case .askInteractive: return SZ_OVERWRITE_ASK
         case .overwriteAll: return SZ_OVERWRITE_ALL
         case .skipExisting: return SZ_OVERWRITE_SKIP
         case .autoRenameExtracted: return SZ_OVERWRITE_AUTO_RENAME
         case .autoRenameExisting: return SZ_OVERWRITE_AUTO_RENAME_EXISTING
         }
+    }
+}
+
+public struct OverwriteConflict: Equatable, Sendable {
+    public let existingPath: String
+    public let existingSize: UInt64?
+    public let existingModifiedDate: Date?
+    public let newPath: String
+    public let newSize: UInt64?
+    public let newModifiedDate: Date?
+
+    public init(
+        existingPath: String,
+        existingSize: UInt64?,
+        existingModifiedDate: Date?,
+        newPath: String,
+        newSize: UInt64?,
+        newModifiedDate: Date?
+    ) {
+        self.existingPath = existingPath
+        self.existingSize = existingSize
+        self.existingModifiedDate = existingModifiedDate
+        self.newPath = newPath
+        self.newSize = newSize
+        self.newModifiedDate = newModifiedDate
+    }
+}
+
+public enum OverwriteDecision: Sendable {
+    case replace
+    case replaceAll
+    case skip
+    case skipAll
+    case autoRename
+    case cancel
+
+    var cValue: sz_overwrite_answer_t {
+        switch self {
+        case .replace: return SZ_OW_ANSWER_YES
+        case .replaceAll: return SZ_OW_ANSWER_YES_TO_ALL
+        case .skip: return SZ_OW_ANSWER_NO
+        case .skipAll: return SZ_OW_ANSWER_NO_TO_ALL
+        case .autoRename: return SZ_OW_ANSWER_AUTO_RENAME
+        case .cancel: return SZ_OW_ANSWER_CANCEL
+        }
+    }
+}
+
+public struct ArchiveHashDigest: Identifiable, Equatable, Sendable {
+    public let algorithm: String
+    public let hex: String
+
+    public var id: String { algorithm }
+
+    public init(algorithm: String, hex: String) {
+        self.algorithm = algorithm
+        self.hex = hex
     }
 }
 
@@ -152,6 +279,8 @@ public struct CompressionOptions: Equatable, Sendable {
     public var splitVolumeBytes: UInt64
     public var encryptHeaders: Bool
     public var storeSymlinks: Bool
+    public var excludeMacOSMetadata: Bool
+    public var preserveMacExtendedAttributes: Bool
 
     public init(
         format: String? = nil,
@@ -162,7 +291,9 @@ public struct CompressionOptions: Equatable, Sendable {
         solidBlockBytes: Int64 = -1,
         splitVolumeBytes: UInt64 = 0,
         encryptHeaders: Bool = false,
-        storeSymlinks: Bool = true
+        storeSymlinks: Bool = true,
+        excludeMacOSMetadata: Bool = true,
+        preserveMacExtendedAttributes: Bool = false
     ) {
         self.format = format
         self.method = method
@@ -173,6 +304,8 @@ public struct CompressionOptions: Equatable, Sendable {
         self.splitVolumeBytes = splitVolumeBytes
         self.encryptHeaders = encryptHeaders
         self.storeSymlinks = storeSymlinks
+        self.excludeMacOSMetadata = excludeMacOSMetadata
+        self.preserveMacExtendedAttributes = preserveMacExtendedAttributes
     }
 }
 

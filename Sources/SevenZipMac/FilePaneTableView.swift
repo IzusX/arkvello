@@ -9,13 +9,15 @@ private final class ArchivePromiseContext: NSObject {
     let itemName: String
     let stripPrefix: String
     let password: String?
+    let encoding: ArchiveNameEncoding
 
-    init(archiveURL: URL, itemPath: String, itemName: String, stripPrefix: String, password: String?) {
+    init(archiveURL: URL, itemPath: String, itemName: String, stripPrefix: String, password: String?, encoding: ArchiveNameEncoding) {
         self.archiveURL = archiveURL
         self.itemPath = itemPath
         self.itemName = itemName
         self.stripPrefix = stripPrefix
         self.password = password
+        self.encoding = encoding
     }
 }
 
@@ -23,6 +25,11 @@ final class KeyHandlingTableView: NSTableView {
     var onKeyAction: ((NSEvent) -> Bool)?
     var onBuildContextMenu: ((Int) -> NSMenu?)?
     var onBecameActive: (() -> Void)?
+    var onCopy: (() -> Void)?
+    var onPaste: (() -> Void)?
+
+    @objc func copy(_ sender: Any?) { onCopy?() }
+    @objc func paste(_ sender: Any?) { onPaste?() }
 
     override func mouseDown(with event: NSEvent) {
         onBecameActive?()
@@ -111,6 +118,14 @@ struct FilePaneTableView: NSViewRepresentable {
 
         tableView.onBecameActive = { [weak coordinator] in
             coordinator?.markPaneActive()
+        }
+        tableView.onCopy = { [weak coordinator] in
+            coordinator?.markPaneActive()
+            coordinator?.appVM.copySelectionToPasteboard()
+        }
+        tableView.onPaste = { [weak coordinator] in
+            coordinator?.markPaneActive()
+            coordinator?.appVM.pasteFromPasteboard()
         }
         tableView.onKeyAction = { [weak coordinator] event in
             coordinator?.handleKeyDown(event) ?? false
@@ -448,6 +463,19 @@ struct FilePaneTableView: NSViewRepresentable {
             markPaneActive()
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
 
+            if flags == .command {
+                switch event.charactersIgnoringModifiers?.lowercased() {
+                case "c":
+                    appVM.copySelectionToPasteboard()
+                    return true
+                case "v":
+                    appVM.pasteFromPasteboard()
+                    return true
+                default:
+                    break
+                }
+            }
+
             // Cmd+Up -> Go Up (..)
             if flags == .command && event.keyCode == 126 {
                 pane.goUp()
@@ -568,6 +596,20 @@ struct FilePaneTableView: NSViewRepresentable {
                     menu.addItem(copyOther)
                 }
 
+                let clipboardCopy = NSMenuItem(title: "Копировать (⌘C)", action: #selector(ctxCopy), keyEquivalent: "")
+                clipboardCopy.target = self
+                menu.addItem(clipboardCopy)
+
+                if !row.isDirectory {
+                    let checksum = NSMenuItem(title: "Контрольные суммы…", action: #selector(ctxChecksum), keyEquivalent: "")
+                    checksum.target = self
+                    menu.addItem(checksum)
+                }
+                if pane.isShowingFlattenedPaths {
+                    let containingFolder = NSMenuItem(title: "Открыть содержащую папку", action: #selector(ctxContainingFolder), keyEquivalent: "")
+                    containingFolder.target = self
+                    menu.addItem(containingFolder)
+                }
                 menu.addItem(.separator())
 
                 let renameItem = NSMenuItem(title: "Переименовать (F2)…", action: #selector(ctxRename), keyEquivalent: "")
@@ -603,6 +645,12 @@ struct FilePaneTableView: NSViewRepresentable {
             return menu
         }
 
+        @objc private func ctxCopy() { appVM.copySelectionToPasteboard() }
+        @objc private func ctxChecksum() { appVM.computeChecksumsForSelection() }
+        @objc private func ctxContainingFolder() {
+            guard let row = pane.selectedActionableRows.first else { return }
+            pane.revealContainingFolder(for: row)
+        }
         @objc private func ctxGoUp() { pane.goUp() }
         @objc private func ctxOpen() { activatePrimarySelection() }
         @objc private func ctxQuickLook() { appVM.triggerQuickLook(in: pane.side) }
@@ -641,8 +689,9 @@ struct FilePaneTableView: NSViewRepresentable {
                     archiveURL: arcURL,
                     itemPath: node.path,
                     itemName: node.name,
-                    stripPrefix: pane.location.archiveSubpath,
-                    password: pane.currentArchivePassword
+                    stripPrefix: node.parentFolderPath,
+                    password: pane.currentArchivePassword,
+                    encoding: pane.archiveEncoding
                 )
                 return provider
             }
@@ -670,7 +719,7 @@ struct FilePaneTableView: NSViewRepresentable {
             }
 
             do {
-                let opened = try OpenArchive(url: ctx.archiveURL, password: ctx.password)
+                let opened = try OpenArchive(url: ctx.archiveURL, password: ctx.password, encoding: ctx.encoding)
                 defer { opened.close() }
                 let tree = VirtualArchiveTree(entries: opened.entries)
                 let indices = tree.extractionIndices(for: [ctx.itemPath])

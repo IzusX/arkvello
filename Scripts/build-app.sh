@@ -203,10 +203,39 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
+# Declare imported archive UTIs and services without changing any default handlers.
+TMPDIR="$ROOT_DIR/.tmp" swift -module-cache-path "$ROOT_DIR/.modcache" - \
+  "$ROOT_DIR/Resources/FinderIntegration.json" "$APP_BUNDLE/Contents/Info.plist" <<'SWIFT_PLIST'
+import Foundation
+let configurationURL = URL(fileURLWithPath: CommandLine.arguments[1])
+let plistURL = URL(fileURLWithPath: CommandLine.arguments[2])
+let configuration = try JSONSerialization.jsonObject(with: Data(contentsOf: configurationURL)) as! [String: Any]
+var plist = try PropertyListSerialization.propertyList(from: Data(contentsOf: plistURL), format: nil) as! [String: Any]
+let archiveTypes = configuration["archiveTypes"] as! [[Any]]
+let identifiers = archiveTypes.map { $0[0] as! String }
+plist["UTImportedTypeDeclarations"] = archiveTypes.map { item -> [String: Any] in
+    let identifier = item[0] as! String
+    let diskImage = identifier == "public.iso-image" || identifier == "com.apple.disk-image-udif"
+    return ["UTTypeIdentifier": identifier, "UTTypeDescription": item[1],
+            "UTTypeConformsTo": [diskImage ? "public.disk-image" : "public.archive"],
+            "UTTypeTagSpecification": ["public.filename-extension": item[2], "public.mime-type": item[3]]]
+}
+plist["CFBundleDocumentTypes"] = [["CFBundleTypeName": "Archive", "CFBundleTypeRole": "Editor",
+    "LSHandlerRank": "Alternate", "LSItemContentTypes": identifiers]]
+plist["NSServices"] = (configuration["services"] as! [[String]]).map { service -> [String: Any] in
+    ["NSMessage": service[0], "NSMenuItem": ["default": service[1]], "NSPortName": "SevenZipMac",
+     "NSSendTypes": ["public.file-url"],
+     "NSRequiredContext": ["NSApplicationIdentifier": "com.apple.finder"], "NSTimeout": "120000"]
+}
+try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0).write(to: plistURL)
+SWIFT_PLIST
 plutil -lint "$APP_BUNDLE/Contents/Info.plist" >/dev/null
 
-echo "[4/4] Signing bundle (ad-hoc for Apple Silicon execution)..."
-codesign --force --sign - "$APP_BUNDLE/Contents/Frameworks/libsevenzip.dylib"
-codesign --force --deep --sign - "$APP_BUNDLE"
+echo "[4/4] Building Quick Look extension and signing inside out..."
+SIGN_IDENTITY="${CODE_SIGN_IDENTITY:--}"
+codesign --force --sign "$SIGN_IDENTITY" "$APP_BUNDLE/Contents/Frameworks/libsevenzip.dylib"
+bash "$ROOT_DIR/Scripts/build-quicklook.sh" "$APP_BUNDLE/Contents/PlugIns/SevenZipQuickLook.appex"
+codesign --force --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
+codesign --verify --deep --strict "$APP_BUNDLE"
 
 echo "Ready: $APP_BUNDLE ($(du -sh "$APP_BUNDLE" | awk '{print $1}'))"

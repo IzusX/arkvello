@@ -30,6 +30,33 @@ typedef enum sz_overwrite_mode {
     SZ_OVERWRITE_AUTO_RENAME_EXISTING = 4
 } sz_overwrite_mode_t;
 
+typedef enum sz_overwrite_answer {
+    SZ_OW_ANSWER_YES = 0,
+    SZ_OW_ANSWER_YES_TO_ALL = 1,
+    SZ_OW_ANSWER_NO = 2,
+    SZ_OW_ANSWER_NO_TO_ALL = 3,
+    SZ_OW_ANSWER_AUTO_RENAME = 4,
+    SZ_OW_ANSWER_CANCEL = 5
+} sz_overwrite_answer_t;
+
+typedef struct sz_overwrite_prompt {
+    const char *existing_path;
+    uint64_t existing_size;
+    int64_t existing_mtime_sec;
+    bool has_existing_size;
+    bool has_existing_mtime;
+    const char *new_path;
+    uint64_t new_size;
+    int64_t new_mtime_sec;
+    bool has_new_size;
+    bool has_new_mtime;
+} sz_overwrite_prompt_t;
+
+typedef struct sz_hash_digest {
+    char *algorithm;
+    char *hex;
+} sz_hash_digest_t;
+
 typedef struct sz_archive sz_archive_t;
 
 typedef struct sz_format_info {
@@ -84,6 +111,7 @@ typedef struct sz_update_options {
     uint64_t volume_bytes;         // 0 = single file, >0 = split into volumes of N bytes
     bool encrypt_headers;          // -mhe=on (7z only)
     bool store_symlinks;           // preserve symbolic links as links (-snl)
+    bool exclude_macos_metadata;   // exclude .DS_Store, ._*, and __MACOSX
 } sz_update_options_t;
 
 // Returns true to continue operation, false to cancel (triggers SZ_STATUS_ERR_CANCELLED).
@@ -93,6 +121,9 @@ typedef bool (*sz_progress_cb)(uint64_t completed, uint64_t total, const char *c
 // Must return a heap-allocated UTF-8 C string (allocated via malloc/strdup), or NULL to cancel.
 // The bridge zeroes and frees the returned buffer after copying.
 typedef char *(*sz_password_cb)(void *user_data);
+
+// Optional callback invoked when overwrite_mode == SZ_OVERWRITE_ASK and target file already exists.
+typedef sz_overwrite_answer_t (*sz_overwrite_cb)(const sz_overwrite_prompt_t *prompt, void *user_data);
 
 const char *sz_version_string(void);
 
@@ -111,6 +142,18 @@ sz_status_t sz_archive_open(
     sz_archive_t **out_archive,
     char **out_error
 );
+
+// code_page: 0 = automatic (UTF-8 + CP866/CP1251 detection), 65001 = UTF-8, 866 = CP866, 1251 = Windows-1251, 1252 = Latin-1, 20866 = KOI8-R
+sz_status_t sz_archive_open_with_options(
+    const char *path,
+    const char *password,
+    uint32_t code_page,
+    sz_password_cb password_cb,
+    void *user_data,
+    sz_archive_t **out_archive,
+    char **out_error
+);
+
 void sz_archive_close(sz_archive_t *archive);
 
 sz_status_t sz_archive_get_summary(
@@ -136,6 +179,22 @@ sz_status_t sz_archive_extract(
     const char *strip_prefix,
     bool full_paths,
     sz_overwrite_mode_t overwrite_mode,
+    const char *password,
+    sz_password_cb password_cb,
+    sz_progress_cb progress_cb,
+    void *user_data,
+    char **out_error
+);
+
+sz_status_t sz_archive_extract_ex(
+    sz_archive_t *archive,
+    const uint32_t *indices,
+    uint32_t index_count,
+    const char *dest_dir,
+    const char *strip_prefix,
+    bool full_paths,
+    sz_overwrite_mode_t overwrite_mode,
+    sz_overwrite_cb overwrite_cb,
     const char *password,
     sz_password_cb password_cb,
     sz_progress_cb progress_cb,
@@ -197,6 +256,29 @@ sz_status_t sz_archive_rename_items(
     void *user_data,
     char **out_error
 );
+
+sz_status_t sz_compute_file_hashes(
+    const char *file_path,
+    sz_progress_cb progress_cb,
+    void *user_data,
+    sz_hash_digest_t **out_digests,
+    uint32_t *out_count,
+    char **out_error
+);
+
+sz_status_t sz_archive_compute_entry_hashes(
+    sz_archive_t *archive,
+    uint32_t index,
+    const char *password,
+    sz_password_cb password_cb,
+    sz_progress_cb progress_cb,
+    void *user_data,
+    sz_hash_digest_t **out_digests,
+    uint32_t *out_count,
+    char **out_error
+);
+
+void sz_free_hashes(sz_hash_digest_t *digests, uint32_t count);
 
 void sz_string_free(char *str);
 void sz_buffer_free(uint8_t *buf);

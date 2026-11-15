@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+    <key>CFBundleDevelopmentRegion</key><string>en</string>
+    <key>CFBundleDisplayName</key><string>7-Zip Archive Preview</string>
+    <key>CFBundleExecutable</key><string>SevenZipQuickLook</string>
+    <key>CFBundleIdentifier</key><string>io.github.izusx.sevenzipmac.quicklook</string>
+    <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+    <key>CFBundleName</key><string>SevenZipQuickLook</string>
+    <key>CFBundlePackageType</key><string>XPC!</string>
+    <key>CFBundleShortVersionString</key><string>0.1.0</string>
+    <key>CFBundleVersion</key><string>2606</string>
+    <key>LSMinimumSystemVersion</key><string>14.0</string>
+    <key>NSExtension</key><dict>
+        <key>NSExtensionPointIdentifier</key><string>com.apple.quicklook.preview</string>
+        <key>NSExtensionPrincipalClass</key><string>SevenZipPreviewProvider</string>
+        <key>NSExtensionAttributes</key><dict>
+            <key>QLIsDataBasedPreview</key><true/>
+            <key>QLSupportedContentTypes</key><array>
+                <string>org.7-zip.7-zip-archive</string>
+                <string>public.zip-archive</string>
+                <string>com.winzip.zipx-archive</string>
+                <string>com.rarlab.rar-archive</string>
+                <string>public.tar-archive</string>
+                <string>org.gnu.gnu-zip-tar-archive</string>
+                <string>public.tar-bzip2-archive</string>
+                <string>org.tukaani.tar-xz-archive</string>
+                <string>io.github.izusx.sevenzipmac.tar-zstd-archive</string>
+                <string>org.gnu.gnu-zip-archive</string>
+                <string>public.bzip2-archive</string>
+                <string>org.tukaani.xz-archive</string>
+                <string>org.tukaani.lzma-archive</string>
+                <string>io.github.izusx.sevenzipmac.zstandard-archive</string>
+                <string>com.microsoft.cab</string>
+                <string>public.iso-image</string>
+                <string>com.apple.disk-image-udif</string>
+                <string>io.github.izusx.sevenzipmac.wim-archive</string>
+                <string>com.apple.xar-archive</string>
+                <string>com.apple.installer-package-archive</string>
+                <string>com.redhat.rpm-archive</string>
+                <string>org.debian.deb-archive</string>
+                <string>public.cpio-archive</string>
+                <string>io.github.izusx.sevenzipmac.split-archive</string>
+            </array>
+        </dict>
+    </dict>
+</dict></plist>
