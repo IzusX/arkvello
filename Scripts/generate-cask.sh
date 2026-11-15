@@ -32,7 +32,7 @@ cask "arkvello" do
   desc "Native archive manager powered by 7-Zip"
   homepage "https://github.com/$REPOSITORY"
 
-  depends_on macos: ">= :sonoma"
+  depends_on macos: :sonoma
 
   app "Arkvello.app"
 
