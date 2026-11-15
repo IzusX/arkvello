@@ -298,8 +298,8 @@ struct ArchiveCoreTests {
             )
         ]
         let singleTree = VirtualArchiveTree(entries: singleRootEntries)
-        let arcURL = URL(fileURLWithPath: "/Users/izus/Downloads/MyProject.7z")
-        let baseDest = URL(fileURLWithPath: "/Users/izus/Downloads")
+        let arcURL = URL(fileURLWithPath: "/fixtures/Downloads/MyProject.7z", isDirectory: false)
+        let baseDest = URL(fileURLWithPath: "/fixtures/Downloads", isDirectory: true)
 
         // Creating subfolder `MyProject` when archive already has sole root `MyProject/` strips `MyProject`
         let plan = SmartExtractionPlanner.planDialogExtraction(
@@ -311,7 +311,7 @@ struct ArchiveCoreTests {
             createArchiveSubfolder: true,
             eliminateRootDuplication: true
         )
-        #expect(plan.finalDestinationDirectory.path == "/Users/izus/Downloads/MyProject")
+        #expect(plan.finalDestinationDirectory.path == "/fixtures/Downloads/MyProject")
         #expect(plan.effectiveStripPrefix == "MyProject")
 
         // Loose multi-file archive on "Extract Here" creates protective folder `LooseFiles/`
@@ -329,10 +329,10 @@ struct ArchiveCoreTests {
         ]
         let looseTree = VirtualArchiveTree(entries: looseEntries)
         let loosePlan = SmartExtractionPlanner.planSmartExtractHere(
-            archiveURL: URL(fileURLWithPath: "/Users/izus/Desktop/LooseFiles.zip"),
+            archiveURL: URL(fileURLWithPath: "/fixtures/Desktop/LooseFiles.zip", isDirectory: false),
             tree: looseTree
         )
-        #expect(loosePlan.finalDestinationDirectory.path == "/Users/izus/Desktop/LooseFiles")
+        #expect(loosePlan.finalDestinationDirectory.path == "/fixtures/Desktop/LooseFiles")
     }
 
     @Test("Built-in 7-Zip hashers compute matching CRC32, SHA-256, and XXH64 on disk and inside archives")
@@ -486,9 +486,10 @@ struct ArchiveCoreTests {
 
     @Test("NavigationLocation transitions seamlessly across disk folders, archives, and nested archives")
     func navigationBreadcrumbsAndUp() {
-        let downloads = URL(fileURLWithPath: "/Users/izus/Downloads")
-        let outerArc = downloads.appendingPathComponent("release.7z")
-        let nestedTemp = URL(fileURLWithPath: "/tmp/nested-inner.tar")
+        // Explicit URL types keep this test independent of local folder existence.
+        let downloads = URL(fileURLWithPath: "/fixtures/Downloads", isDirectory: true)
+        let outerArc = downloads.appendingPathComponent("release.7z", isDirectory: false)
+        let nestedTemp = URL(fileURLWithPath: "/tmp/nested-inner.tar", isDirectory: false)
 
         let loc0 = NavigationLocation.diskFolder(downloads)
         let loc1 = loc0.enteringArchiveOnDisk(outerArc)
